@@ -156,7 +156,7 @@ async function loadFirebaseState() {
     }
     if (!next.datasetPassword || next.datasetPassword !== datasetPassword) {
       serverReady = false;
-      return { ok: false, status: 401 };
+      return { ok: false, status: 403 };
     }
     setState(next);
     serverReady = true;
@@ -620,9 +620,7 @@ async function login(event) {
       addAudit("Dataset created", `${state.admins[0].name} created company dataset ${companyKey}.`);
       saveState("Company dataset created.");
     } else {
-      const message = loadResult.status === 404
-        ? "Dataset not found. Login as admin with a new dataset name to create it."
-        : "Invalid dataset password.";
+      const message = getDatasetLoginError(loadResult.status);
       document.querySelector("#loginMessage").textContent = message;
       return;
     }
@@ -637,6 +635,19 @@ async function login(event) {
   view = "dashboard";
   render();
   processQr();
+}
+
+function getDatasetLoginError(status) {
+  if (status === 404) {
+    return "Dataset not found. Login as admin with a new dataset name to create it.";
+  }
+  if (usingFirebase() && status === 401) {
+    return "Firebase database permission denied. Please publish the Realtime Database read/write rules first.";
+  }
+  if (status === 0) {
+    return "Cannot connect to the shared database. Check your internet connection and Firebase setup.";
+  }
+  return "Invalid dataset password.";
 }
 
 function renderApp() {
