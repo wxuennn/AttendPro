@@ -4,7 +4,9 @@ AttendPro is a web-based employee attendance system for computer and phone. It s
 
 ## How To Open The System
 
-Use the official AttendPro website link provided by the system owner.
+Use this official AttendPro website link:
+
+[https://wxuennn.github.io/AttendPro/](https://wxuennn.github.io/AttendPro/)
 
 All users must open the same official link so the data can sync.
 
@@ -12,7 +14,7 @@ Do not clone, edit, or push this repository just to use the system.
 
 ## Login
 
-1. Open the official AttendPro website link.
+1. Open [https://wxuennn.github.io/AttendPro/](https://wxuennn.github.io/AttendPro/).
 2. Select `Employee` or `Admin`.
 3. Enter:
    - `Company Dataset`
@@ -27,7 +29,7 @@ The system starts empty. There are no default employees.
 
 The first admin creates a company dataset:
 
-1. Open the official AttendPro website link.
+1. Open [https://wxuennn.github.io/AttendPro/](https://wxuennn.github.io/AttendPro/).
 2. Select `Admin`.
 3. Enter a new `Company Dataset`, for example:
 
@@ -115,7 +117,3 @@ Employee -> localhost on another computer
 - Employee status changes require admin remarks.
 - Attendance deletion requires admin remarks.
 - Important actions are stored in Audit Log.
-
-## Technical Notes
-
-This repository contains the system source code. Deployment/setup notes for the project owner are in `DEPLOYMENT.md`.
