@@ -8,6 +8,14 @@ GitHub stores the source code only. GitHub does not run the live system and does
 
 For real shared use, deploy AttendPro to Render, Railway, or another Node.js hosting service. After deployment, the hosting platform gives one real public website link. All admins and employees must open that same link.
 
+## One-Click Render Deploy
+
+[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/wxuennn/AttendPro)
+
+Click the button, sign in to Render, review the service, and deploy. Render will use `render.yaml` from this repository.
+
+After Render finishes, copy the real Render URL and use that as the AttendPro website link for everyone.
+
 ## User Quick Start
 
 ### If The System Is Already Deployed

@@ -14,6 +14,16 @@ GitHub does not:
 
 For live sync, deploy the project as a Node.js web app.
 
+## Fastest Setup
+
+Use the Render deploy button in `README.md`, or open this link:
+
+```text
+https://render.com/deploy?repo=https://github.com/wxuennn/AttendPro
+```
+
+Render will read `render.yaml` and create the web service with persistent dataset storage.
+
 ## Option 1: Render
 
 Recommended for easiest deployment.
