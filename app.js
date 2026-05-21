@@ -3,7 +3,7 @@ const COMPANY_KEY_STORAGE = "attendpro-company-key";
 const DATASET_PASSWORD_STORAGE = "attendpro-dataset-password";
 const TAB_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const channel = "BroadcastChannel" in window ? new BroadcastChannel("attendpro-sync") : null;
-let companyKey = new URLSearchParams(location.search).get("company") || localStorage.getItem(COMPANY_KEY_STORAGE) || "default";
+let companyKey = cleanDatasetKey(new URLSearchParams(location.search).get("company") || localStorage.getItem(COMPANY_KEY_STORAGE) || "default");
 let datasetPassword = localStorage.getItem(`${DATASET_PASSWORD_STORAGE}-${companyKey}`) || "";
 
 const seedState = {
@@ -65,9 +65,13 @@ function apiHeaders(extra = {}) {
 }
 
 function setCompanyKey(value) {
-  companyKey = (value || "default").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "") || "default";
+  companyKey = cleanDatasetKey(value);
   localStorage.setItem(COMPANY_KEY_STORAGE, companyKey);
   datasetPassword = localStorage.getItem(`${DATASET_PASSWORD_STORAGE}-${companyKey}`) || "";
+}
+
+function cleanDatasetKey(value) {
+  return (value || "default").trim().replace(/[^A-Za-z0-9_-]/g, "") || "default";
 }
 
 function setDatasetPassword(value) {
@@ -337,15 +341,18 @@ function calendarStatus(employeeId, dateValue) {
   const startDate = employmentDate(employeeId);
   if (startDate && dateValue < startDate) return { label: "", type: "empty" };
   const records = attendanceForDate(employeeId, dateValue);
-  const approved = approvedRequestForDate(employeeId, dateValue);
-  const pending = requestsForDate(employeeId, dateValue).find((request) => request.status === "Pending");
-  const rejected = requestsForDate(employeeId, dateValue).find((request) => request.status === "Rejected");
   if (records.length) {
+    if (records.some((record) => record.status === "Public Holiday")) return { label: "Public Holiday", type: "holiday" };
+    if (records.some((record) => record.status === "Absent")) return { label: "Absent", type: "absent" };
     if (records.some((record) => record.status === "Late")) return { label: "Late", type: "late" };
     if (records.some((record) => record.status === "Checked In")) return { label: "Checked In", type: "active" };
     if (records.some((record) => record.status === "Off-day Work")) return { label: "Off-day Work", type: "offwork" };
     return { label: "Present", type: "present" };
   }
+  if (dateValue > today()) return { label: "", type: "empty" };
+  const approved = approvedRequestForDate(employeeId, dateValue);
+  const pending = requestsForDate(employeeId, dateValue).find((request) => request.status === "Pending");
+  const rejected = requestsForDate(employeeId, dateValue).find((request) => request.status === "Rejected");
   if (approved) return { label: approved.type, type: approved.type.includes("WFH") ? "wfh" : "approved" };
   if (pending) return { label: `Pending ${pending.type}`, type: "pending" };
   if (rejected) return { label: `Rejected ${rejected.type}`, type: "rejected" };
@@ -357,6 +364,7 @@ function displayVerification(value) {
   const text = String(value || "-");
   if (text.includes("Manual rotating code")) return "Code";
   if (text.includes("Rotating QR code")) return "QR";
+  if (text.includes("Admin manual update")) return "Admin Update";
   return text.replace(/\s*\+\s*GPS verified.*$/i, "");
 }
 
@@ -602,7 +610,7 @@ function renderLogin() {
 
 async function login(event) {
   event.preventDefault();
-  const selectedCompany = document.querySelector("#companyKey").value.trim() || "default";
+  const selectedCompany = cleanDatasetKey(document.querySelector("#companyKey").value);
   const selectedDatasetPassword = document.querySelector("#datasetPassword").value;
   const email = document.querySelector("#email").value.trim().toLowerCase();
   const password = document.querySelector("#password").value;
@@ -775,12 +783,12 @@ function renderRecords(admin) {
   const calendar = admin
     ? `<section class="panel"><div class="panel-head"><h2>Employee Calendar</h2><div class="actions"><select class="select-control" id="calendarEmployee">${state.employees.map((emp) => `<option value="${emp.id}" ${emp.id === selectedCalendarEmployee ? "selected" : ""}>${escapeHtml(emp.name)}</option>`).join("")}</select><button class="btn" data-export-calendar="${selectedCalendarEmployee}">Export Report</button><button class="btn" data-export-calendar="all">Export All</button></div></div>${selectedEmp ? calendarForEmployee(selectedEmp.id) : `<p class="empty">No employee selected.</p>`}</section>`
     : `<section class="panel"><div class="panel-head"><h2>Monthly Calendar</h2><button class="btn" data-export-calendar="${session.id}">Export Report</button></div>${calendarForEmployee(session.id)}</section>`;
-  return `<section class="search-panel">${searchBox(key, "Search records")}</section><section class="panel"><div class="panel-head"><h2>${admin ? "Attendance Records" : "My Attendance Records"}</h2><button class="btn" data-export-attendance="${admin ? "all" : "mine"}">Export CSV</button></div>${attendanceTable(records.slice().reverse(), admin)}</section>${calendar}`;
+  return `<section class="search-panel">${searchBox(key, "Search records")}</section><section class="panel"><div class="panel-head"><h2>${admin ? "Attendance Records" : "My Attendance Records"}</h2><div class="actions">${admin ? `<button class="btn primary" id="addManualAttendance">Add Manual Status</button>` : ""}<button class="btn" data-export-attendance="${admin ? "all" : "mine"}">Export CSV</button></div></div>${attendanceTable(records.slice().reverse(), admin)}</section>${calendar}`;
 }
 
 function attendanceTable(records, admin) {
   if (!records.length) return `<p class="empty">No records yet.</p>`;
-  return `<div class="table-wrap record-scroll"><table class="responsive-table"><thead><tr>${admin ? "<th>Employee</th>" : ""}<th>Date</th><th>In</th><th>Out</th><th>Hours</th><th>Status</th><th>Verify</th>${admin ? "<th>Action</th>" : ""}</tr></thead><tbody>${records.map((r) => `<tr>${admin ? `<td data-label="Employee">${escapeHtml(employee(r.employeeId)?.name || r.employeeId)}</td>` : ""}<td data-label="Date">${formatDate(r.date)}</td><td data-label="In">${r.checkIn}</td><td data-label="Out">${r.checkOut || "-"}</td><td data-label="Hours">${r.hours || "-"}</td><td data-label="Status"><span class="${badgeClass(r.status)}">${r.status}</span></td><td data-label="Verify">${escapeHtml(displayVerification(r.verification))}</td>${admin ? `<td data-label="Action"><button class="btn danger" data-delete-attendance="${r.id}">Delete</button></td>` : ""}</tr>`).join("")}</tbody></table></div>`;
+  return `<div class="table-wrap record-scroll"><table class="responsive-table"><thead><tr>${admin ? "<th>Employee</th>" : ""}<th>Date</th><th>In</th><th>Out</th><th>Hours</th><th>Status</th><th>Verify</th><th>Remark</th>${admin ? "<th>Action</th>" : ""}</tr></thead><tbody>${records.map((r) => `<tr>${admin ? `<td data-label="Employee">${escapeHtml(employee(r.employeeId)?.name || r.employeeId)}</td>` : ""}<td data-label="Date">${formatDate(r.date)}</td><td data-label="In">${r.checkIn || "-"}</td><td data-label="Out">${r.checkOut || "-"}</td><td data-label="Hours">${r.hours || "-"}</td><td data-label="Status"><span class="${badgeClass(r.status)}">${r.status}</span></td><td data-label="Verify">${escapeHtml(displayVerification(r.verification))}</td><td data-label="Remark">${escapeHtml(r.remark || "-")}</td>${admin ? `<td data-label="Action"><button class="btn danger" data-delete-attendance="${r.id}">Delete</button></td>` : ""}</tr>`).join("")}</tbody></table></div>`;
 }
 
 function calendarForEmployee(employeeId) {
@@ -834,7 +842,7 @@ function leaveTable(leaves, admin) {
 
 function renderEmployees() {
   const employees = state.employees.filter((emp) => includesSearch([emp.id, emp.name, emp.email, emp.department, emp.position, emp.employmentDate, emp.phone, emp.status, emp.statusRemark], "employees"));
-  return `<section class="search-panel">${searchBox("employees", "Search employees")}</section><section class="panel"><div class="panel-head"><h2>Employees</h2><div class="actions"><button class="btn" data-export-employees>Export CSV</button><button class="btn primary" id="addEmployee">Add Employee</button></div></div><div class="table-wrap record-scroll"><table><thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Password</th><th>Department</th><th>Position</th><th>Joined</th><th>Phone</th><th>Status</th><th>Remark</th><th>Action</th></tr></thead><tbody>${employees.map((emp) => `<tr><td>${emp.id}</td><td>${escapeHtml(emp.name)}</td><td>${escapeHtml(emp.email)}</td><td><code>${escapeHtml(emp.password)}</code></td><td>${escapeHtml(emp.department)}</td><td>${escapeHtml(emp.position)}</td><td>${emp.employmentDate ? formatDate(emp.employmentDate) : "-"}</td><td>${escapeHtml(emp.phone || "-")}</td><td>${emp.status}</td><td>${escapeHtml(emp.statusRemark || "-")}</td><td><button class="btn" data-edit="${emp.id}">Edit</button></td></tr>`).join("") || `<tr><td colspan="11" class="empty">No employees found.</td></tr>`}</tbody></table></div></section>`;
+  return `<section class="search-panel">${searchBox("employees", "Search employees")}</section><section class="panel"><div class="panel-head"><h2>Employees</h2><div class="actions"><button class="btn" data-export-employees>Export CSV</button><button class="btn primary" id="addEmployee">Add Employee</button></div></div><div class="table-wrap record-scroll"><table class="employees-table"><thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Password</th><th>Department</th><th>Position</th><th>Joined</th><th>Phone</th><th>Status</th><th>Remark</th><th>Action</th></tr></thead><tbody>${employees.map((emp) => `<tr><td>${emp.id}</td><td>${escapeHtml(emp.name)}</td><td>${escapeHtml(emp.email)}</td><td><code>${escapeHtml(emp.password)}</code></td><td>${escapeHtml(emp.department)}</td><td>${escapeHtml(emp.position)}</td><td>${emp.employmentDate ? formatDate(emp.employmentDate) : "-"}</td><td>${escapeHtml(emp.phone || "-")}</td><td>${emp.status}</td><td>${escapeHtml(emp.statusRemark || "-")}</td><td><button class="btn" data-edit="${emp.id}">Edit</button></td></tr>`).join("") || `<tr><td colspan="11" class="empty">No employees found.</td></tr>`}</tbody></table></div></section>`;
 }
 
 function renderProfile() {
@@ -903,6 +911,7 @@ function bindEvents() {
   document.querySelector("#settingsForm")?.addEventListener("submit", saveSettings);
   document.querySelector("#useMyLocation")?.addEventListener("click", useMyLocationForOffice);
   document.querySelector("#addEmployee")?.addEventListener("click", () => openEmployeeModal());
+  document.querySelector("#addManualAttendance")?.addEventListener("click", () => openManualAttendanceModal());
   document.querySelectorAll("[data-edit]").forEach((button) => button.addEventListener("click", () => openEmployeeModal(button.dataset.edit)));
   document.querySelectorAll("[data-approve]").forEach((button) => button.addEventListener("click", () => updateLeave(button.dataset.approve, "Approved")));
   document.querySelectorAll("[data-reject]").forEach((button) => button.addEventListener("click", () => updateLeave(button.dataset.reject, "Rejected")));
@@ -1143,8 +1152,8 @@ async function useMyLocationForOffice() {
 
 function exportAttendance(scope) {
   const records = scope === "all" ? state.attendance : state.attendance.filter((item) => item.employeeId === session.id);
-  const rows = records.map((r) => [employee(r.employeeId)?.name || r.employeeId, r.employeeId, r.date, r.checkIn, r.checkOut || "", r.hours || "", r.status, displayVerification(r.verification)]);
-  downloadCSV(`${safeName(exportBase(scope, "attendance-records"))}.csv`, ["Employee", "Employee ID", "Date", "Check In", "Check Out", "Hours", "Status", "Verification"], rows);
+  const rows = records.map((r) => [employee(r.employeeId)?.name || r.employeeId, r.employeeId, r.date, r.checkIn, r.checkOut || "", r.hours || "", r.status, displayVerification(r.verification), r.remark || ""]);
+  downloadCSV(`${safeName(exportBase(scope, "attendance-records"))}.csv`, ["Employee", "Employee ID", "Date", "Check In", "Check Out", "Hours", "Status", "Verification", "Remark"], rows);
 }
 
 function exportRequests(scope) {
@@ -1178,7 +1187,7 @@ function exportCalendar(target) {
           ${monthDates().map((dateValue) => {
             const records = attendanceForDate(emp.id, dateValue);
             const status = calendarStatus(emp.id, dateValue);
-            return `<tr><td>${formatDate(dateValue)}</td><td>${isWorkingDay(dateValue) ? "Yes" : "No"}</td><td>${escapeHtml(status.label)}</td><td>${records.map((r) => r.checkIn).join(", ") || "-"}</td><td>${records.map((r) => r.checkOut || "-").join(", ") || "-"}</td></tr>`;
+            return `<tr><td>${formatDate(dateValue)}</td><td>${isWorkingDay(dateValue) ? "Yes" : "No"}</td><td>${escapeHtml(status.label)}</td><td>${records.map((r) => r.checkIn).filter(Boolean).join(", ") || "-"}</td><td>${records.map((r) => r.checkOut || "-").join(", ") || "-"}</td></tr>`;
           }).join("")}
         </tbody>
       </table>
@@ -1196,11 +1205,60 @@ function exportCalendar(target) {
     .calendar-cell{min-height:58px;border:1px solid #d9e4e8;border-radius:8px;padding:7px;background:#fbfcfd}
     .calendar-cell strong{display:block;font-size:13px}.calendar-cell span{font-size:11px;color:#65747c}
     .present{background:#e8f8ef;border-color:#b7e8ca}.late{background:#fff5df;border-color:#f1d38c}.absent,.rejected{background:#fff0f0;border-color:#f3baba}
-    .approved,.wfh{background:#eaf2ff;border-color:#bad0ff}.pending{background:#fff9e8;border-color:#ecd79d}.off,.empty,.empty-cell{background:#f4f7f8}
+    .approved,.wfh{background:#eaf2ff;border-color:#bad0ff}.holiday{background:#f2edff;border-color:#cbbef5}.pending{background:#fff9e8;border-color:#ecd79d}.off,.empty,.empty-cell{background:#f4f7f8}
     table{width:100%;border-collapse:collapse;margin-top:8px}th,td{border-bottom:1px solid #d9e4e8;text-align:left;padding:9px;font-size:13px}th{color:#65747c;text-transform:uppercase;font-size:11px}
   </style></head><body><header><h1>${escapeHtml(title)}</h1><div class="meta">Company: ${escapeHtml(companyReportName())} | Dataset: ${escapeHtml(companyKey)} | Generated: ${new Date().toLocaleString("en-GB")}</div></header>${sections}</body></html>`;
   const fileBase = target === "all" ? `${companyReportName()}-calendar-report-${monthLabel()}` : `${companyReportName()}-${employees[0].name}-calendar-report-${monthLabel()}`;
   downloadHTML(`${safeName(fileBase)}.html`, html);
+}
+
+function openManualAttendanceModal() {
+  if (!state.employees.length) return toast("Add employees first.");
+  const modal = document.querySelector("#modal");
+  modal.innerHTML = `<form class="modal" id="manualAttendanceForm"><h2>Add Manual Status</h2><p class="helper">Use this for approved corrections, absence updates, or public holidays. A remark is required for audit tracking.</p><label class="field"><span>Employee</span><select id="manualEmployee">${state.employees.map((emp) => `<option value="${emp.id}">${escapeHtml(emp.name)} (${escapeHtml(emp.id)})</option>`).join("")}</select></label><label class="field"><span>Date</span><input id="manualDate" type="date" value="${today()}" required></label><label class="field"><span>Status</span><select id="manualStatus"><option>Absent</option><option>Public Holiday</option><option>Present</option><option>Late</option><option>Checked In</option></select></label><label class="field check-line"><input id="manualAllEmployees" type="checkbox"><span>Apply to all employees for this date</span></label><label class="field"><span>Remark / Proof</span><textarea id="manualRemark" required placeholder="Example: Public holiday approved by management, medical proof received, admin correction after missed checkout"></textarea></label><div class="modal-actions"><button class="btn primary" type="submit">Save Status</button><button class="btn" type="button" id="closeModal">Cancel</button></div></form>`;
+  modal.classList.add("show");
+  document.querySelector("#closeModal").addEventListener("click", closeModal);
+  document.querySelector("#manualAttendanceForm").addEventListener("submit", saveManualAttendance);
+}
+
+function saveManualAttendance(event) {
+  event.preventDefault();
+  const dateValue = document.querySelector("#manualDate").value;
+  const status = document.querySelector("#manualStatus").value;
+  const remark = document.querySelector("#manualRemark").value.trim();
+  const applyAll = document.querySelector("#manualAllEmployees").checked;
+  if (!remark) return toast("Remark is required.");
+  const targets = applyAll ? state.employees : [employee(document.querySelector("#manualEmployee").value)].filter(Boolean);
+  const eligible = targets.filter((emp) => !emp.employmentDate || dateValue >= emp.employmentDate);
+  if (!eligible.length) return toast("No eligible employees for this date.");
+  eligible.forEach((emp) => {
+    const existing = state.attendance.find((item) => item.employeeId === emp.id && item.date === dateValue);
+    if (existing) {
+      existing.status = status;
+      existing.remark = remark;
+      existing.verification = "Admin manual update";
+      if (!existing.checkIn) existing.checkIn = "";
+      if (!existing.checkOut) existing.checkOut = "";
+      if (!existing.hours) existing.hours = "";
+    } else {
+      state.attendance.push({
+        id: `ATT${Date.now()}${Math.random().toString(16).slice(2, 6)}`,
+        employeeId: emp.id,
+        date: dateValue,
+        checkIn: "",
+        checkOut: "",
+        hours: "",
+        status,
+        verification: "Admin manual update",
+        remark
+      });
+    }
+  });
+  addAudit("Manual attendance status", `${session.name} set ${status} for ${eligible.length} employee(s) on ${formatDate(dateValue)}. Remark: ${remark}.`);
+  saveState("Attendance status updated.");
+  closeModal();
+  render();
+  toast("Manual status saved.");
 }
 
 function openEmployeeModal(id) {
