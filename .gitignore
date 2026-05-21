@@ -1,0 +1,16 @@
+# Runtime data and secrets
+attendpro-data*.json
+data/
+*.log
+
+# Local public tunnel binary and generated shortcuts
+cloudflared.exe
+AttendPro Public Website.url
+AttendPro Public Website.html
+
+# OS/editor noise
+Thumbs.db
+.DS_Store
+.vscode/
+.idea/
+node_modules/

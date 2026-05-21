@@ -1,0 +1,19 @@
+{
+  "name": "AttendPro Employee Attendance System",
+  "short_name": "AttendPro",
+  "description": "Employee attendance, leave, QR check-in, and admin management system.",
+  "start_url": "./index.html",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#f5f8fa",
+  "theme_color": "#0f766e",
+  "orientation": "any",
+  "icons": [
+    {
+      "src": "icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}
