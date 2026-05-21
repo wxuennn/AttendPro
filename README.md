@@ -1,38 +1,16 @@
 # AttendPro Employee Attendance System
 
-AttendPro is a web-based employee attendance system for computer and phone. It includes admin management, employee check-in/out, GPS verification, rotating QR/code check-in, work requests, monthly calendars, audit logs, CSV/report export, and multi-company datasets.
+AttendPro is a web-based employee attendance system for computer and phone. It supports employee check-in/out, GPS verification, rotating QR/code check-in, work requests, monthly calendars, admin management, audit logs, and multi-company datasets.
 
-## Important Concept
-
-GitHub stores the source code only. GitHub does not run the live system and does not sync attendance data by itself.
-
-For real shared use, deploy AttendPro with one shared backend. The free option is:
-
-```text
-GitHub Pages website + Firebase Realtime Database
-```
-
-All admins and employees must open the same GitHub Pages link.
-
-## Official Free Sync Method
-
-This project is designed to run free with:
-
-```text
-GitHub Pages + Firebase Realtime Database
-```
-
-Only the project owner needs to configure Firebase and GitHub Pages once.
-
-Normal users do not need to edit code, push to GitHub, or deploy anything. They only open the official website link and login.
-
-## For Normal Users
+## How To Open The System
 
 Use the official AttendPro website link provided by the system owner.
 
-Do not clone, edit, or push this repository.
+All users must open the same official link so the data can sync.
 
-Login steps:
+Do not clone, edit, or push this repository just to use the system.
+
+## Login
 
 1. Open the official AttendPro website link.
 2. Select `Employee` or `Admin`.
@@ -43,90 +21,13 @@ Login steps:
    - Password
 4. Click `Login`.
 
-All data syncs through the shared Firebase backend.
-
-## For The Project Owner Only
-
-These steps are only needed once by the person who owns this repository.
-
-### Step 1: Create Firebase Project
-
-1. Go to Firebase Console.
-2. Click `Add project`.
-3. Create a project, for example `attendpro`.
-4. Use the free Spark plan.
-
-### Step 2: Create Realtime Database
-
-1. In Firebase, open `Build` -> `Realtime Database`.
-2. Click `Create Database`.
-3. Choose a nearby region.
-4. Start in test mode for coursework/demo.
-5. Copy the database URL. It looks similar to:
-
-```text
-https://your-project-id-default-rtdb.asia-southeast1.firebasedatabase.app
-```
-
-### Step 3: Put Firebase URL Into This Project
-
-Open `firebase-config.js` and change:
-
-```js
-window.ATTENDPRO_FIREBASE = {
-  enabled: false,
-  databaseURL: ""
-};
-```
-
-to:
-
-```js
-window.ATTENDPRO_FIREBASE = {
-  enabled: true,
-  databaseURL: "PASTE_YOUR_FIREBASE_DATABASE_URL_HERE"
-};
-```
-
-### Step 4: Save The Config In This Repository
-
-Commit and push the updated `firebase-config.js`.
-
-This is done by the project owner only. Other users should not change this file.
-
-### Step 5: Turn On GitHub Pages
-
-1. Go to the GitHub repository.
-2. Open `Settings`.
-3. Open `Pages`.
-4. Under `Build and deployment`, choose `Deploy from a branch`.
-5. Branch: `main`.
-6. Folder: `/root`.
-7. Save.
-8. GitHub will generate a Pages link.
-
-Use that GitHub Pages link as the official AttendPro website link for everyone.
-
-After this setup is complete, users only need the GitHub Pages link, company dataset, dataset password, and their own account login.
-
-## Local Demo For Owner/Developer
-
-If the owner/developer wants to run locally:
-
-1. Open the project folder on Windows.
-2. Double-click `Open AttendPro.vbs`.
-3. The website opens automatically.
-4. Use `Stop AttendPro Server.vbs` when finished.
-
-Normal users should use the official GitHub Pages website link instead.
-
 ## First-Time Company Setup
 
 The system starts empty. There are no default employees.
 
-To create the first company dataset:
+The first admin creates a company dataset:
 
-1. Open the AttendPro website.
+1. Open the official AttendPro website link.
 2. Select `Admin`.
 3. Enter a new `Company Dataset`, for example:
 
@@ -144,7 +45,7 @@ After login, the first admin should:
 
 1. Go to `Company Settings`.
 2. Set company name.
-3. Set office location using `Use My Current Location` while physically at the office, or enter latitude/longitude manually.
+3. Set office location.
 4. Set allowed GPS radius.
 5. Set working days.
 6. Set late-after time.
@@ -155,95 +56,49 @@ After login, the first admin should:
 
 Employees then login with the same company dataset and dataset password.
 
-## Alternative: Deploy Online With Render
+## Employee Functions
 
-Render is an alternative if you want to run the included Node.js server. This may require paid persistent disk depending on Render account/plan.
+- Check in by rotating code or QR.
+- Check out.
+- View attendance history.
+- View monthly attendance calendar.
+- Submit work requests such as leave, WFH, or business trip.
+- View request status.
+- Update profile and password.
 
-1. Push this repository to GitHub.
-2. Go to Render.
-3. Sign in with GitHub.
-4. Click `New`.
-5. Choose `Blueprint`.
-6. Select this AttendPro GitHub repository.
-7. Render reads `render.yaml` automatically.
-8. Click `Apply` or `Deploy`.
-9. Wait until the deploy status becomes live.
-10. Open the public URL generated by Render.
-11. Use that URL as the official AttendPro link for admin, employees, phone QR scanning, and QR display.
+## Admin Functions
 
-The included `render.yaml` sets:
+- Manage employees.
+- Set employment date and account status.
+- View and manage attendance records.
+- Delete attendance records with required remarks.
+- Approve or reject work requests.
+- View dashboard summary.
+- Configure company settings.
+- Open QR display.
+- Export reports.
+- View audit log.
 
-```text
-Build Command: npm install
-Start Command: npm start
-Health Check: /healthz
-Persistent Disk: /var/data
-DATA_DIR: /var/data
-```
-
-The persistent disk stores company dataset files. This is required so data is not lost when the server restarts.
-
-## Alternative: Deploy Online With Railway
-
-1. Push this repository to GitHub.
-2. Go to Railway.
-3. Click `New Project`.
-4. Choose `Deploy from GitHub repo`.
-5. Select this AttendPro repository.
-6. Railway detects the Node.js app.
-7. Set the start command:
-
-```bash
-npm start
-```
-
-8. Add a Railway volume.
-9. Mount the volume to:
-
-```text
-/app/data
-```
-
-10. Add environment variable:
-
-```text
-DATA_DIR=/app/data
-```
-
-11. Deploy the project.
-12. Open the Railway generated public URL.
-13. Use that URL as the official AttendPro link for all users.
-
-## How To Share The System With Users
-
-After deployment, send users only the real deployed AttendPro link.
-
-Use the same link for:
-
-- Admin computer
-- Employee phones
-- QR display monitor
-- Employee QR scan
-
-Data sync works only when everyone uses the same deployed link.
-
-## QR Display
+## QR Check-In
 
 1. Admin logs in.
 2. Go to Dashboard.
 3. Click `Open QR Display`.
-4. Put that QR page on a lobby monitor.
-5. Employees scan the QR using their phone.
-6. The system checks rotating QR validity and GPS office range before check-in.
+4. Show the QR page on a lobby monitor.
+5. Employee scans the QR using phone.
+6. The system validates QR/code and checks GPS office range.
+7. If valid, check-in is recorded.
 
 ## Data Sync Rule
+
+Data sync works only when everyone opens the same official AttendPro website link.
 
 Works:
 
 ```text
-Admin -> deployed AttendPro link
-Employee -> same deployed AttendPro link
-QR display -> same deployed AttendPro link
+Admin -> official AttendPro link
+Employee -> same official AttendPro link
+QR display -> same official AttendPro link
 ```
 
 Does not sync:
@@ -253,44 +108,14 @@ Admin -> localhost on one computer
 Employee -> localhost on another computer
 ```
 
-## Main Files
-
-```text
-index.html       Main page
-app.js           Frontend application logic
-styles.css       User interface styling
-server.js        Node.js server and dataset API
-package.json     Node.js start command
-render.yaml      Render deployment setup
-README.md        Main usage guide
-DEPLOYMENT.md    Deployment checklist
-firebase-config.js Optional Firebase sync configuration
-```
-
-## Files Not Uploaded To GitHub
-
-These runtime/private files are excluded by `.gitignore`:
-
-```text
-attendpro-data*.json
-*.log
-cloudflared.exe
-AttendPro Public Website.url
-AttendPro Public Website.html
-```
-
-`firebase-config.js` can be committed for coursework because Firebase web config is not a private password. Protect the Firebase database with proper rules for production.
-
 ## Security Notes
 
 - Each company dataset requires a dataset password.
-- Dataset files are blocked from direct browser download.
 - QR/code check-in requires GPS verification inside the office radius.
 - Employee status changes require admin remarks.
 - Attendance deletion requires admin remarks.
 - Important actions are stored in Audit Log.
-- Firebase test mode is for coursework/demo only.
 
-## Production Note
+## Technical Notes
 
-This project supports JSON storage through `server.js` and optional Firebase Realtime Database sync. For real company production use, configure proper Firebase rules or replace storage with a protected database such as PostgreSQL, MySQL, Supabase, Firebase, MongoDB, or another managed database.
+This repository contains the system source code. Deployment/setup notes for the project owner are in `DEPLOYMENT.md`.
