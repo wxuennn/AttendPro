@@ -6,15 +6,73 @@ AttendPro is a web-based employee attendance system for computer and phone. It i
 
 GitHub stores the source code only. GitHub does not run the live system and does not sync attendance data by itself.
 
-For real shared use, deploy AttendPro to Render, Railway, or another Node.js hosting service. After deployment, the hosting platform gives one real public website link. All admins and employees must open that same link.
+For real shared use, deploy AttendPro with one shared backend. The free option is:
 
-## One-Click Render Deploy
+```text
+GitHub Pages website + Firebase Realtime Database
+```
 
-[![Deploy to Render](https://render.com/images/deploy-to-render-button.svg)](https://render.com/deploy?repo=https://github.com/wxuennn/AttendPro)
+All admins and employees must open the same GitHub Pages link.
 
-Click the button, sign in to Render, review the service, and deploy. Render will use `render.yaml` from this repository.
+## Free Sync Setup: GitHub Pages + Firebase
 
-After Render finishes, copy the real Render URL and use that as the AttendPro website link for everyone.
+This is the recommended free setup.
+
+### Step 1: Create Firebase Project
+
+1. Go to Firebase Console.
+2. Click `Add project`.
+3. Create a project, for example `attendpro`.
+4. Use the free Spark plan.
+
+### Step 2: Create Realtime Database
+
+1. In Firebase, open `Build` -> `Realtime Database`.
+2. Click `Create Database`.
+3. Choose a nearby region.
+4. Start in test mode for coursework/demo.
+5. Copy the database URL. It looks similar to:
+
+```text
+https://your-project-id-default-rtdb.asia-southeast1.firebasedatabase.app
+```
+
+### Step 3: Put Firebase URL Into This Project
+
+Open `firebase-config.js` and change:
+
+```js
+window.ATTENDPRO_FIREBASE = {
+  enabled: false,
+  databaseURL: ""
+};
+```
+
+to:
+
+```js
+window.ATTENDPRO_FIREBASE = {
+  enabled: true,
+  databaseURL: "PASTE_YOUR_FIREBASE_DATABASE_URL_HERE"
+};
+```
+
+### Step 4: Push To GitHub
+
+Commit and push the updated `firebase-config.js`.
+
+### Step 5: Turn On GitHub Pages
+
+1. Go to the GitHub repository.
+2. Open `Settings`.
+3. Open `Pages`.
+4. Under `Build and deployment`, choose `Deploy from a branch`.
+5. Branch: `main`.
+6. Folder: `/root`.
+7. Save.
+8. GitHub will generate a Pages link.
+
+Use that GitHub Pages link as the official AttendPro website link for everyone.
 
 ## User Quick Start
 
@@ -80,9 +138,9 @@ After login, the first admin should:
 
 Employees then login with the same company dataset and dataset password.
 
-## Deploy Online With Render
+## Alternative: Deploy Online With Render
 
-Render is the recommended simple deployment method for coursework.
+Render is an alternative if you want to run the included Node.js server. This may require paid persistent disk depending on Render account/plan.
 
 1. Push this repository to GitHub.
 2. Go to Render.
@@ -108,7 +166,7 @@ DATA_DIR: /var/data
 
 The persistent disk stores company dataset files. This is required so data is not lost when the server restarts.
 
-## Deploy Online With Railway
+## Alternative: Deploy Online With Railway
 
 1. Push this repository to GitHub.
 2. Go to Railway.
@@ -189,6 +247,7 @@ package.json     Node.js start command
 render.yaml      Render deployment setup
 README.md        Main usage guide
 DEPLOYMENT.md    Deployment checklist
+firebase-config.js Optional Firebase sync configuration
 ```
 
 ## Files Not Uploaded To GitHub
@@ -203,6 +262,8 @@ AttendPro Public Website.url
 AttendPro Public Website.html
 ```
 
+`firebase-config.js` can be committed for coursework because Firebase web config is not a private password. Protect the Firebase database with proper rules for production.
+
 ## Security Notes
 
 - Each company dataset requires a dataset password.
@@ -211,7 +272,8 @@ AttendPro Public Website.html
 - Employee status changes require admin remarks.
 - Attendance deletion requires admin remarks.
 - Important actions are stored in Audit Log.
+- Firebase test mode is for coursework/demo only.
 
 ## Production Note
 
-This project uses JSON files for coursework/demo storage. For real company production use, replace JSON storage with a database such as PostgreSQL, MySQL, Supabase, Firebase, MongoDB, or another managed database.
+This project supports JSON storage through `server.js` and optional Firebase Realtime Database sync. For real company production use, configure proper Firebase rules or replace storage with a protected database such as PostgreSQL, MySQL, Supabase, Firebase, MongoDB, or another managed database.

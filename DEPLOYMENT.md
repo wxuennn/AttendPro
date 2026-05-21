@@ -12,9 +12,47 @@ GitHub does not:
 - store live company attendance data
 - sync users by itself
 
-For live sync, deploy the project as a Node.js web app.
+For live sync, use one shared backend.
 
-## Fastest Setup
+Free sync option:
+
+```text
+GitHub Pages + Firebase Realtime Database
+```
+
+Node server option:
+
+```text
+Render / Railway / VPS
+```
+
+## Option 1: Free GitHub Pages + Firebase
+
+1. Create a Firebase project on the free Spark plan.
+2. Create a Realtime Database.
+3. Copy the Realtime Database URL.
+4. Edit `firebase-config.js`.
+5. Set:
+
+```js
+window.ATTENDPRO_FIREBASE = {
+  enabled: true,
+  databaseURL: "PASTE_YOUR_FIREBASE_DATABASE_URL_HERE"
+};
+```
+
+6. Commit and push `firebase-config.js`.
+7. In GitHub, open repository `Settings`.
+8. Open `Pages`.
+9. Choose `Deploy from a branch`.
+10. Branch: `main`.
+11. Folder: `/root`.
+12. Save.
+13. Use the generated GitHub Pages URL for all admins and employees.
+
+This is free and supports shared sync through Firebase.
+
+## Option 2: Render
 
 Use the Render deploy button in `README.md`, or open this link:
 
@@ -24,7 +62,7 @@ https://render.com/deploy?repo=https://github.com/wxuennn/AttendPro
 
 Render will read `render.yaml` and create the web service with persistent dataset storage.
 
-## Option 1: Render
+### Render Steps
 
 Recommended for easiest deployment.
 
@@ -50,7 +88,7 @@ Persistent Disk Mount Path: /var/data
 Environment Variable: DATA_DIR=/var/data
 ```
 
-## Option 2: Railway
+## Option 3: Railway
 
 1. Push the latest code to GitHub.
 2. Open Railway.
@@ -93,8 +131,8 @@ DATA_DIR=/app/data
 8. Add employee accounts.
 9. Share the same URL, dataset name, and dataset password with users.
 
-## Do Not Use GitHub Pages
+## GitHub Pages Note
 
-GitHub Pages cannot run the Node.js server, so AttendPro data sync will not work there.
+GitHub Pages can be used only with Firebase sync enabled in `firebase-config.js`.
 
-Use Render, Railway, VPS, or another Node.js hosting provider.
+GitHub Pages cannot run `server.js`, so do not use GitHub Pages for the Node server version. Use Render, Railway, VPS, or another Node.js hosting provider if you want to run `server.js`.

@@ -39,6 +39,20 @@ const searchTerms = {};
 
 const app = document.querySelector("#app");
 
+function firebaseConfig() {
+  return window.ATTENDPRO_FIREBASE || null;
+}
+
+function usingFirebase() {
+  const config = firebaseConfig();
+  return Boolean(config && config.databaseURL && config.enabled !== false);
+}
+
+function firebaseStateUrl() {
+  const base = firebaseConfig().databaseURL.replace(/\/$/, "");
+  return `${base}/datasets/${encodeURIComponent(companyKey)}.json`;
+}
+
 function apiUrl() {
   return `./api/state?company=${encodeURIComponent(companyKey)}`;
 }
@@ -98,7 +112,9 @@ function setState(next) {
 }
 
 async function loadServerState() {
-  if (location.protocol === "file:" || !datasetPassword) return { ok: false, status: 0 };
+  if (!datasetPassword) return { ok: false, status: 0 };
+  if (usingFirebase()) return loadFirebaseState();
+  if (location.protocol === "file:") return { ok: false, status: 0 };
   try {
     const response = await fetch(apiUrl(), { cache: "no-store", headers: apiHeaders() });
     if (response.ok) {
@@ -116,12 +132,49 @@ async function loadServerState() {
 }
 
 async function pushServerState() {
+  if (usingFirebase()) return pushFirebaseState();
   if (location.protocol === "file:") return;
   await fetch(apiUrl(), {
     method: "POST",
     headers: apiHeaders({ "Content-Type": "application/json" }),
     body: JSON.stringify(state)
   });
+  lastStateText = JSON.stringify(state);
+}
+
+async function loadFirebaseState() {
+  try {
+    const response = await fetch(firebaseStateUrl(), { cache: "no-store" });
+    if (!response.ok) {
+      serverReady = false;
+      return { ok: false, status: response.status };
+    }
+    const next = await response.json();
+    if (!next) {
+      serverReady = false;
+      return { ok: false, status: 404 };
+    }
+    if (!next.datasetPassword || next.datasetPassword !== datasetPassword) {
+      serverReady = false;
+      return { ok: false, status: 401 };
+    }
+    setState(next);
+    serverReady = true;
+    render();
+    return { ok: true, status: 200 };
+  } catch {
+    serverReady = false;
+    return { ok: false, status: 0 };
+  }
+}
+
+async function pushFirebaseState() {
+  const response = await fetch(firebaseStateUrl(), {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(state)
+  });
+  if (!response.ok) throw new Error("Firebase sync failed.");
   lastStateText = JSON.stringify(state);
 }
 
@@ -145,11 +198,19 @@ function startSync() {
   }
 
   setInterval(async () => {
-    if (location.protocol === "file:" || document.hidden || !session || !datasetPassword) return;
+    if ((!usingFirebase() && location.protocol === "file:") || document.hidden || !session || !datasetPassword) return;
     try {
-      const response = await fetch(apiUrl(), { cache: "no-store", headers: apiHeaders() });
-      if (!response.ok) return;
-      const next = normalize(await response.json());
+      let next;
+      if (usingFirebase()) {
+        const response = await fetch(firebaseStateUrl(), { cache: "no-store" });
+        if (!response.ok) return;
+        next = normalize(await response.json());
+        if (!next.datasetPassword || next.datasetPassword !== datasetPassword) return;
+      } else {
+        const response = await fetch(apiUrl(), { cache: "no-store", headers: apiHeaders() });
+        if (!response.ok) return;
+        next = normalize(await response.json());
+      }
       const text = JSON.stringify(next);
       if (text !== lastStateText) {
         setState(next);
@@ -597,7 +658,7 @@ function renderApp() {
       <main>
         <header class="topbar">
           <div><h1>${title()}</h1><p>${new Date().toLocaleDateString("en-GB", { weekday: "long", day: "2-digit", month: "long", year: "numeric" })}</p></div>
-          <div class="top-actions"><span class="sync-pill">${serverReady ? "Server Sync" : "Local Mode"}</span><button class="btn ghost" id="logout">Logout</button></div>
+          <div class="top-actions"><span class="sync-pill">${serverReady ? (usingFirebase() ? "Firebase Sync" : "Server Sync") : "Local Mode"}</span><button class="btn ghost" id="logout">Logout</button></div>
         </header>
         <section class="content">${renderView()}</section>
       </main>
