@@ -14,9 +14,40 @@ GitHub Pages website + Firebase Realtime Database
 
 All admins and employees must open the same GitHub Pages link.
 
-## Free Sync Setup: GitHub Pages + Firebase
+## Official Free Sync Method
 
-This is the recommended free setup.
+This project is designed to run free with:
+
+```text
+GitHub Pages + Firebase Realtime Database
+```
+
+Only the project owner needs to configure Firebase and GitHub Pages once.
+
+Normal users do not need to edit code, push to GitHub, or deploy anything. They only open the official website link and login.
+
+## For Normal Users
+
+Use the official AttendPro website link provided by the system owner.
+
+Do not clone, edit, or push this repository.
+
+Login steps:
+
+1. Open the official AttendPro website link.
+2. Select `Employee` or `Admin`.
+3. Enter:
+   - `Company Dataset`
+   - `Dataset Password`
+   - Email
+   - Password
+4. Click `Login`.
+
+All data syncs through the shared Firebase backend.
+
+## For The Project Owner Only
+
+These steps are only needed once by the person who owns this repository.
 
 ### Step 1: Create Firebase Project
 
@@ -57,9 +88,11 @@ window.ATTENDPRO_FIREBASE = {
 };
 ```
 
-### Step 4: Push To GitHub
+### Step 4: Save The Config In This Repository
 
 Commit and push the updated `firebase-config.js`.
+
+This is done by the project owner only. Other users should not change this file.
 
 ### Step 5: Turn On GitHub Pages
 
@@ -74,34 +107,18 @@ Commit and push the updated `firebase-config.js`.
 
 Use that GitHub Pages link as the official AttendPro website link for everyone.
 
-## User Quick Start
+After this setup is complete, users only need the GitHub Pages link, company dataset, dataset password, and their own account login.
 
-### If The System Is Already Deployed
+## Local Demo For Owner/Developer
 
-1. Open the real AttendPro website link given by the admin.
-2. Select `Employee` or `Admin`.
-3. Enter:
-   - `Company Dataset`
-   - `Dataset Password`
-   - Email
-   - Password
-4. Click `Login`.
+If the owner/developer wants to run locally:
 
-Employees can check in/out, view attendance history, submit work requests, and view their calendar.
+1. Open the project folder on Windows.
+2. Double-click `Open AttendPro.vbs`.
+3. The website opens automatically.
+4. Use `Stop AttendPro Server.vbs` when finished.
 
-Admins can manage employees, approve/reject work requests, view attendance, delete attendance records with remarks, change company settings, and check audit logs.
-
-### If You Only Downloaded The Code
-
-On Windows:
-
-1. Download or clone this repository.
-2. Open the project folder.
-3. Double-click `Open AttendPro.vbs`.
-4. The website opens automatically.
-5. Use `Stop AttendPro Server.vbs` when finished.
-
-This local method is mainly for demo/testing. For all users to share the same data, deploy online.
+Normal users should use the official GitHub Pages website link instead.
 
 ## First-Time Company Setup
 

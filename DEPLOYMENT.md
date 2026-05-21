@@ -28,6 +28,8 @@ Render / Railway / VPS
 
 ## Option 1: Free GitHub Pages + Firebase
 
+These steps are for the project owner only. Normal users do not need to edit code, push to GitHub, or deploy anything.
+
 1. Create a Firebase project on the free Spark plan.
 2. Create a Realtime Database.
 3. Copy the Realtime Database URL.
@@ -51,6 +53,8 @@ window.ATTENDPRO_FIREBASE = {
 13. Use the generated GitHub Pages URL for all admins and employees.
 
 This is free and supports shared sync through Firebase.
+
+After this is done, normal users only open the GitHub Pages URL and login with the company dataset, dataset password, email, and password.
 
 ## Option 2: Render
 
