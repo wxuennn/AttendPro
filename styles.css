@@ -12,7 +12,7 @@
   --shadow: 0 18px 44px rgba(20, 35, 42, 0.12);
   --radius: 8px;
   font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  font-size: 14px;
+  font-size: 12.5px;
 }
 
 * { box-sizing: border-box; }
@@ -23,34 +23,34 @@ button { border: 0; cursor: pointer; }
 .login-screen {
   min-height: 100vh;
   display: grid;
-  grid-template-columns: minmax(320px, 1fr) minmax(360px, 0.8fr);
+  grid-template-columns: minmax(300px, 1fr) minmax(330px, 0.72fr);
   background: linear-gradient(120deg, rgba(15, 118, 110, 0.92), rgba(23, 36, 45, 0.84)), url("https://images.unsplash.com/photo-1556761175-b413da4baf72?auto=format&fit=crop&w=1600&q=80") center/cover;
 }
-.login-hero { display: flex; flex-direction: column; justify-content: space-between; padding: 44px; color: white; }
-.login-hero h1 { margin: 0 0 18px; font-size: clamp(2.5rem, 6vw, 5.2rem); line-height: 0.95; }
+.login-hero { display: flex; flex-direction: column; justify-content: space-between; padding: 34px 38px; color: white; }
+.login-hero h1 { margin: 0 0 14px; font-size: clamp(2.15rem, 4.6vw, 4.15rem); line-height: 0.98; }
 .login-hero p { max-width: 620px; color: rgba(255,255,255,0.82); line-height: 1.7; }
 .brand-lockup { display: flex; align-items: center; gap: 12px; font-weight: 850; }
-.brand-mark { display: grid; place-items: center; width: 42px; height: 42px; border-radius: 8px; background: var(--primary); color: white; font-weight: 900; }
-.login-panel { align-self: center; justify-self: center; width: min(440px, calc(100% - 32px)); padding: 26px; background: rgba(255,255,255,0.95); border-radius: var(--radius); box-shadow: var(--shadow); }
-.login-panel h2 { margin: 0 0 18px; }
+.brand-mark { display: grid; place-items: center; width: 36px; height: 36px; border-radius: 8px; background: var(--primary); color: white; font-weight: 900; }
+.login-panel { align-self: center; justify-self: center; width: min(380px, calc(100% - 32px)); padding: 20px; background: rgba(255,255,255,0.95); border-radius: var(--radius); box-shadow: var(--shadow); }
+.login-panel h2 { margin: 0 0 14px; font-size: 1.45rem; }
 .segmented { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; margin-bottom: 16px; background: var(--surface-2); border-radius: var(--radius); }
-.segmented button { min-height: 40px; border-radius: 6px; background: transparent; color: var(--muted); font-weight: 800; }
+.segmented button { min-height: 34px; border-radius: 6px; background: transparent; color: var(--muted); font-weight: 800; }
 .segmented .active { background: white; color: var(--primary-strong); }
 
-.layout { min-height: 100vh; display: grid; grid-template-columns: 220px minmax(0, 1fr); }
-.sidebar { position: sticky; top: 0; max-height: 100vh; overflow: auto; display: flex; flex-direction: column; gap: 16px; padding: 18px; background: var(--sidebar); color: white; }
+.layout { min-height: 100vh; display: grid; grid-template-columns: 200px minmax(0, 1fr); }
+.sidebar { position: sticky; top: 0; max-height: 100vh; overflow: auto; display: flex; flex-direction: column; gap: 14px; padding: 16px; background: var(--sidebar); color: white; }
 .sidebar nav { display: grid; gap: 6px; }
-.sidebar nav button { min-height: 42px; padding: 0 12px; border-radius: var(--radius); text-align: left; color: rgba(255,255,255,0.72); background: transparent; font-weight: 750; }
+.sidebar nav button { min-height: 36px; padding: 0 10px; border-radius: var(--radius); text-align: left; color: rgba(255,255,255,0.72); background: transparent; font-weight: 750; }
 .sidebar nav button.active, .sidebar nav button:hover { color: white; background: rgba(255,255,255,0.1); }
 .user-card { padding: 12px; border-radius: var(--radius); background: rgba(255,255,255,0.08); }
 .user-card span { display: block; margin-top: 3px; color: rgba(255,255,255,0.65); text-transform: capitalize; }
 
 main { min-width: 0; }
-.topbar { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 14px 20px; background: rgba(255,255,255,0.9); border-bottom: 1px solid var(--line); backdrop-filter: blur(14px); }
+.topbar { position: sticky; top: 0; z-index: 3; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 18px; background: rgba(255,255,255,0.9); border-bottom: 1px solid var(--line); backdrop-filter: blur(14px); }
 .topbar h1 { margin: 0; font-size: 1.24rem; }
 .topbar p { margin: 3px 0 0; color: var(--muted); }
 .top-actions, .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; }
-.content { display: grid; gap: 14px; padding: clamp(12px, 1.7vw, 18px); overflow-x: hidden; }
+.content { display: grid; gap: 12px; padding: clamp(10px, 1.35vw, 16px); overflow-x: hidden; }
 .grid.two { display: grid; grid-template-columns: minmax(0, 1fr) minmax(320px, 0.8fr); gap: 18px; }
 .request-layout {
   display: grid;
@@ -81,7 +81,7 @@ main { min-width: 0; }
 .metrics { display: grid; grid-template-columns: repeat(3, minmax(160px, 1fr)); gap: 12px; }
 .metrics.compact { grid-template-columns: repeat(3, minmax(160px, 1fr)); }
 .metric, .panel { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); box-shadow: 0 10px 28px rgba(20,35,42,0.06); }
-.metric { padding: 13px; }
+.metric { padding: 11px; }
 .code-metric { position: relative; }
 .metric-row {
   display: flex;
@@ -100,7 +100,7 @@ main { min-width: 0; }
 }
 .metric span { color: var(--muted); font-weight: 760; font-size: 0.84rem; }
 .metric strong { display: block; margin-top: 7px; font-size: 1.42rem; overflow-wrap: anywhere; }
-.panel { min-width: 0; padding: 14px; }
+.panel { min-width: 0; padding: 12px; }
 .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 16px; flex-wrap: wrap; }
 .panel-head h2 { margin: 0; font-size: 1.05rem; }
 .panel-head p { margin: 4px 0 0; color: var(--muted); }
@@ -108,27 +108,27 @@ main { min-width: 0; }
 .clock-grid span { color: var(--muted); font-weight: 760; }
 .clock-grid strong { display: block; margin-top: 5px; font-size: 1.35rem; overflow-wrap: anywhere; }
 
-.field { display: grid; gap: 7px; margin-bottom: 12px; }
+.field { display: grid; gap: 6px; margin-bottom: 10px; }
 .field span { color: var(--muted); font-weight: 760; font-size: 0.84rem; }
-.field input, .field select, .field textarea, .select-control { width: 100%; min-height: 42px; padding: 9px 11px; border: 1px solid var(--line); border-radius: var(--radius); background: white; color: var(--ink); }
-.field textarea { min-height: 96px; resize: vertical; }
+.field input, .field select, .field textarea, .select-control { width: 100%; min-height: 36px; padding: 7px 10px; border: 1px solid var(--line); border-radius: var(--radius); background: white; color: var(--ink); }
+.field textarea { min-height: 82px; resize: vertical; }
 .password-control {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 42px;
+  grid-template-columns: minmax(0, 1fr) 36px;
   align-items: center;
 }
 .password-control input {
   grid-column: 1 / -1;
   grid-row: 1;
-  padding-right: 46px;
+  padding-right: 40px;
 }
 .password-toggle {
   grid-column: 2;
   grid-row: 1;
   display: grid;
   place-items: center;
-  width: 34px;
-  height: 34px;
+  width: 30px;
+  height: 30px;
   justify-self: end;
   margin-right: 4px;
   border-radius: 6px;
@@ -141,8 +141,8 @@ main { min-width: 0; }
   background: #eef7f6;
 }
 .password-toggle svg {
-  width: 19px;
-  height: 19px;
+  width: 17px;
+  height: 17px;
   fill: none;
   stroke: currentColor;
   stroke-width: 2;
@@ -318,7 +318,7 @@ main { min-width: 0; }
   box-shadow: inset 0 0 0 1px var(--primary);
 }
 
-.btn { display: inline-flex; align-items: center; justify-content: center; min-height: 36px; padding: 0 12px; border-radius: var(--radius); background: var(--surface-2); color: var(--ink); font-weight: 850; text-align: center; }
+.btn { display: inline-flex; align-items: center; justify-content: center; min-height: 32px; padding: 0 11px; border-radius: var(--radius); background: var(--surface-2); color: var(--ink); font-weight: 850; text-align: center; }
 .btn.primary { background: var(--primary); color: white; }
 .btn.danger { color: var(--danger); background: #fff0f0; }
 .btn.ghost { border: 1px solid var(--line); background: white; }
