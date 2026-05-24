@@ -329,6 +329,15 @@ function approvedRequestForDate(employeeId, dateValue) {
   return requestsForDate(employeeId, dateValue).find((request) => request.status === "Approved");
 }
 
+function requestDurationLabel(request) {
+  return request.duration || "Full Day";
+}
+
+function requestCalendarLabel(request) {
+  const duration = requestDurationLabel(request);
+  return duration === "Full Day" ? request.type : `${request.type} (${duration})`;
+}
+
 function attendanceForDate(employeeId, dateValue) {
   return state.attendance.filter((item) => item.employeeId === employeeId && item.date === dateValue);
 }
@@ -353,9 +362,9 @@ function calendarStatus(employeeId, dateValue) {
   const approved = approvedRequestForDate(employeeId, dateValue);
   const pending = requestsForDate(employeeId, dateValue).find((request) => request.status === "Pending");
   const rejected = requestsForDate(employeeId, dateValue).find((request) => request.status === "Rejected");
-  if (approved) return { label: approved.type, type: approved.type.includes("WFH") ? "wfh" : "approved" };
-  if (pending) return { label: `Pending ${pending.type}`, type: "pending" };
-  if (rejected) return { label: `Rejected ${rejected.type}`, type: "rejected" };
+  if (approved) return { label: requestCalendarLabel(approved), type: approved.type.includes("WFH") ? "wfh" : "approved" };
+  if (pending) return { label: `Pending ${requestCalendarLabel(pending)}`, type: "pending" };
+  if (rejected) return { label: `Rejected ${requestCalendarLabel(rejected)}`, type: "rejected" };
   if (isWorkingDay(dateValue) && dateValue <= today()) return { label: "Absent", type: "absent" };
   return { label: "Off Day", type: "off" };
 }
@@ -820,7 +829,7 @@ function calendarForEmployee(employeeId) {
 function renderLeaveForm() {
   const mine = state.leaves
     .filter((leave) => leave.employeeId === session.id)
-    .filter((leave) => includesSearch([leave.type, leave.from, formatDate(leave.from), leave.to, formatDate(leave.to), leave.reason, leave.status], "myRequests"))
+    .filter((leave) => includesSearch([leave.type, requestDurationLabel(leave), leave.from, formatDate(leave.from), leave.to, formatDate(leave.to), leave.reason, leave.status], "myRequests"))
     .slice().reverse();
   return `
     <section class="search-panel">${searchBox("myRequests", "Search requests")}</section>
@@ -828,6 +837,7 @@ function renderLeaveForm() {
       <form class="panel form-grid" id="leaveForm">
         <div class="panel-head wide"><h2>Submit Work Request</h2></div>
         <label class="field"><span>Type</span><select id="leaveType"><option>Annual Leave</option><option>Medical Leave</option><option>WFH</option><option>Business Trip</option><option>Emergency Leave</option><option>Unpaid Leave</option></select></label>
+        <label class="field"><span>Duration</span><select id="leaveDuration"><option>Full Day</option><option>Half Day Morning</option><option>Half Day Afternoon</option></select></label>
         <label class="field"><span>From</span><input id="leaveFrom" type="date" min="${today()}" required></label>
         <label class="field"><span>To</span><input id="leaveTo" type="date" min="${today()}" required></label>
         <label class="field wide"><span>Reason</span><textarea id="leaveReason" required></textarea></label>
@@ -840,14 +850,14 @@ function renderLeaveForm() {
 
 function renderLeaveApproval() {
   const requests = state.leaves
-    .filter((leave) => includesSearch([employee(leave.employeeId)?.name, leave.employeeId, leave.type, leave.from, formatDate(leave.from), leave.to, formatDate(leave.to), leave.reason, leave.status], "requestsAll"))
+    .filter((leave) => includesSearch([employee(leave.employeeId)?.name, leave.employeeId, leave.type, requestDurationLabel(leave), leave.from, formatDate(leave.from), leave.to, formatDate(leave.to), leave.reason, leave.status], "requestsAll"))
     .slice().reverse();
   return `<section class="search-panel">${searchBox("requestsAll", "Search requests")}</section><section class="panel"><div class="panel-head"><h2>Work Requests</h2><button class="btn" data-export-requests="all">Export CSV</button></div>${leaveTable(requests, true)}</section>`;
 }
 
 function leaveTable(leaves, admin) {
   if (!leaves.length) return `<p class="empty">No requests.</p>`;
-  return `<div class="table-wrap record-scroll"><table class="responsive-table"><thead><tr>${admin ? "<th>Employee</th>" : ""}<th>Type</th><th>From</th><th>To</th><th>Reason</th><th>Status</th>${admin ? "<th>Action</th>" : ""}</tr></thead><tbody>${leaves.map((leave) => `<tr>${admin ? `<td data-label="Employee">${escapeHtml(employee(leave.employeeId)?.name || leave.employeeId)}</td>` : ""}<td data-label="Type">${leave.type}</td><td data-label="From">${formatDate(leave.from)}</td><td data-label="To">${formatDate(leave.to)}</td><td data-label="Reason">${escapeHtml(leave.reason)}</td><td data-label="Status"><span class="${badgeClass(leave.status)}">${leave.status}</span></td>${admin ? `<td class="actions" data-label="Action"><button class="btn primary" data-approve="${leave.id}" ${leave.status !== "Pending" ? "disabled" : ""}>Approve</button><button class="btn danger" data-reject="${leave.id}" ${leave.status !== "Pending" ? "disabled" : ""}>Reject</button></td>` : ""}</tr>`).join("")}</tbody></table></div>`;
+  return `<div class="table-wrap record-scroll"><table class="responsive-table"><thead><tr>${admin ? "<th>Employee</th>" : ""}<th>Type</th><th>Duration</th><th>From</th><th>To</th><th>Reason</th><th>Status</th>${admin ? "<th>Action</th>" : ""}</tr></thead><tbody>${leaves.map((leave) => `<tr>${admin ? `<td data-label="Employee">${escapeHtml(employee(leave.employeeId)?.name || leave.employeeId)}</td>` : ""}<td data-label="Type">${leave.type}</td><td data-label="Duration">${requestDurationLabel(leave)}</td><td data-label="From">${formatDate(leave.from)}</td><td data-label="To">${formatDate(leave.to)}</td><td data-label="Reason">${escapeHtml(leave.reason)}</td><td data-label="Status"><span class="${badgeClass(leave.status)}">${leave.status}</span></td>${admin ? `<td class="actions" data-label="Action"><button class="btn primary" data-approve="${leave.id}" ${leave.status !== "Pending" ? "disabled" : ""}>Approve</button><button class="btn danger" data-reject="${leave.id}" ${leave.status !== "Pending" ? "disabled" : ""}>Reject</button></td>` : ""}</tr>`).join("")}</tbody></table></div>`;
 }
 
 function renderEmployees() {
@@ -1064,10 +1074,12 @@ function submitLeave(event) {
   if (!isActiveEmployee()) return toast("Inactive account cannot submit requests.");
   const from = document.querySelector("#leaveFrom").value;
   const to = document.querySelector("#leaveTo").value;
+  const duration = document.querySelector("#leaveDuration").value;
   if (to < from) return toast("End date must be after start date.");
-  const leave = { id: `LEV${Date.now()}`, employeeId: session.id, type: document.querySelector("#leaveType").value, from, to, reason: document.querySelector("#leaveReason").value.trim(), status: "Pending", reviewedBy: "" };
+  if (duration !== "Full Day" && from !== to) return toast("Half day requests must use the same From and To date.");
+  const leave = { id: `LEV${Date.now()}`, employeeId: session.id, type: document.querySelector("#leaveType").value, duration, from, to, reason: document.querySelector("#leaveReason").value.trim(), status: "Pending", reviewedBy: "" };
   state.leaves.push(leave);
-  addAudit("Request submitted", `${session.name} submitted ${leave.type}.`);
+  addAudit("Request submitted", `${session.name} submitted ${leave.type} (${duration}).`);
   saveState("New work request.");
   render();
   toast("Request submitted.");
@@ -1168,8 +1180,8 @@ function exportAttendance(scope) {
 
 function exportRequests(scope) {
   const requests = scope === "all" ? state.leaves : state.leaves.filter((item) => item.employeeId === session.id);
-  const rows = requests.map((r) => [employee(r.employeeId)?.name || r.employeeId, r.employeeId, r.type, r.from, r.to, r.reason, r.status, r.reviewedBy || ""]);
-  downloadCSV(`${safeName(exportBase(scope, "work-requests"))}.csv`, ["Employee", "Employee ID", "Type", "From", "To", "Reason", "Status", "Reviewed By"], rows);
+  const rows = requests.map((r) => [employee(r.employeeId)?.name || r.employeeId, r.employeeId, r.type, requestDurationLabel(r), r.from, r.to, r.reason, r.status, r.reviewedBy || ""]);
+  downloadCSV(`${safeName(exportBase(scope, "work-requests"))}.csv`, ["Employee", "Employee ID", "Type", "Duration", "From", "To", "Reason", "Status", "Reviewed By"], rows);
 }
 
 function exportEmployees() {
