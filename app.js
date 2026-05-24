@@ -556,8 +556,8 @@ function escapeHtml(value) {
     .replace(/"/g, "&quot;");
 }
 
-function passwordField(id, label, value = "", placeholder = "") {
-  return `<label class="field password-field"><span>${label}</span><div class="password-control"><input id="${id}" type="password" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}" required><button class="password-toggle" type="button" data-toggle-password="${id}" aria-label="Show or hide password"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"></path><circle cx="12" cy="12" r="2.8"></circle></svg></button></div></label>`;
+function passwordField(id, label, value = "", placeholder = "", autocomplete = "current-password", extra = "") {
+  return `<label class="field password-field"><span>${label}</span><div class="password-control"><input id="${id}" type="password" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}" autocomplete="${autocomplete}" ${extra} required><button class="password-toggle" type="button" data-toggle-password="${id}" aria-label="Show or hide password"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"></path><circle cx="12" cy="12" r="2.8"></circle></svg></button></div></label>`;
 }
 
 function render() {
@@ -580,17 +580,17 @@ function renderLogin() {
           <p>Live attendance, rotating QR check-in, leave workflow, employee records, and admin dashboard.</p>
         </div>
       </section>
-      <form class="login-panel" id="loginForm">
+      <form class="login-panel" id="loginForm" autocomplete="on">
         <h2>Sign in</h2>
         <div class="segmented">
           <button type="button" data-role="employee" class="${loginRole === "employee" ? "active" : ""}">Employee</button>
           <button type="button" data-role="admin" class="${loginRole === "admin" ? "active" : ""}">Admin</button>
         </div>
-        <label class="field"><span>Company Dataset</span><input id="companyKey" value="${escapeHtml(companyKey)}" placeholder="company-name" required></label>
-        ${passwordField("datasetPassword", "Dataset Password", datasetPassword, "Company dataset password")}
+        <label class="field"><span>Company Dataset</span><input id="companyKey" value="${escapeHtml(companyKey)}" placeholder="company-name" autocomplete="organization" required></label>
+        ${passwordField("datasetPassword", "Dataset Password", datasetPassword, "Company dataset password", "off", 'data-lpignore="true" data-1p-ignore="true"')}
         <p class="helper">Use the same dataset name and dataset password on every company device. A new Admin login creates a new empty dataset automatically.</p>
-        <label class="field"><span>Email</span><input id="email" type="email" required placeholder="Email"></label>
-        ${passwordField("password", "Password", "", "Password")}
+        <label class="field"><span>Email</span><input id="email" type="email" required placeholder="Email" autocomplete="username"></label>
+        ${passwordField("password", "Password", "", "Password", "current-password")}
         <button class="btn primary" type="submit">Login</button>
         <p class="helper">${pendingQr ? "Login as employee to complete QR check-in." : "Use your assigned company account."}</p>
         <div class="toast inline" id="loginMessage"></div>
