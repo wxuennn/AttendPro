@@ -110,7 +110,12 @@ function normalize(input) {
     },
     datasetPassword: input.datasetPassword || seedState.datasetPassword,
     admins: input.admins || seedState.admins,
-    employees: (input.employees || seedState.employees).map((emp) => ({ ...emp, employmentDate: emp.employmentDate || "" })),
+    employees: (input.employees || seedState.employees).map((emp) => ({
+      ...emp,
+      employmentDate: emp.employmentDate || "",
+      employeeType: emp.employeeType || "Permanent",
+      attendanceMode: emp.attendanceMode || (["Part-time", "Contract"].includes(emp.employeeType) ? "Multiple Sessions" : "Single Daily")
+    })),
     attendance: input.attendance || [],
     leaves: input.leaves || [],
     auditLogs: input.auditLogs || [],
@@ -414,8 +419,24 @@ function todaysRecords(id = session?.id) {
   return state.attendance.filter((item) => item.employeeId === id && item.date === today());
 }
 
+function recordsForDate(employeeId, dateValue) {
+  return state.attendance.filter((item) => item.employeeId === employeeId && item.date === dateValue);
+}
+
 function isOpenAttendanceRecord(record) {
   return Boolean(record.checkIn && !record.checkOut && ["Checked In", "Late", "Off-day Work"].includes(record.status));
+}
+
+function allowsMultipleSessions(emp = employee(session?.id)) {
+  return emp?.attendanceMode === "Multiple Sessions";
+}
+
+function totalMinutesForRecords(records) {
+  return records.reduce((sum, record) => sum + parseDurationMinutes(record.hours), 0);
+}
+
+function totalHoursForDate(employeeId, dateValue) {
+  return formatMinutes(totalMinutesForRecords(recordsForDate(employeeId, dateValue)));
 }
 
 function isActiveEmployee(id = session?.id) {
@@ -871,13 +892,15 @@ function renderEmployeeDashboard() {
   const todayRecords = todaysRecords();
   const latestToday = todayRecords.at(-1);
   const inactive = emp.status === "Inactive";
+  const multiSession = allowsMultipleSessions(emp);
   const adminUpdates = adminManualUpdates(session.id).slice(0, 5);
   return `
     <div class="metrics">
       <div class="metric"><span>Department</span><strong>${escapeHtml(emp.department)}</strong></div>
       <div class="metric"><span>Today Sessions</span><strong>${todaysRecords().length}</strong></div>
-      <div class="metric code-metric"><div class="metric-row"><span>Current Code</span><small class="metric-timer" id="countdown">${secondsLeft()}s</small></div><strong id="liveCode">${currentCode()}</strong></div>
+      <div class="metric"><span>Today Worked</span><strong>${totalHoursForDate(session.id, today())}</strong></div>
     </div>
+    <div class="metrics"><div class="metric"><span>Employee Type</span><strong>${escapeHtml(emp.employeeType)}</strong></div><div class="metric"><span>Attendance Mode</span><strong>${escapeHtml(emp.attendanceMode)}</strong></div><div class="metric code-metric"><div class="metric-row"><span>Current Code</span><small class="metric-timer" id="countdown">${secondsLeft()}s</small></div><strong id="liveCode">${currentCode()}</strong></div></div>
     ${inactive ? `<section class="panel notice danger">This account is inactive. You can view and export records only.</section>` : ""}
     <section class="panel">
       <div class="panel-head"><h2>Today Attendance</h2></div>
@@ -887,14 +910,14 @@ function renderEmployeeDashboard() {
         <div><span>Check Out</span><strong>${latestToday?.checkOut || "--:--"}</strong></div>
         <div><span>Status</span><strong>${latestToday?.status || "Ready"}</strong></div>
       </div>
-      <p class="helper">Scan the lobby QR or enter the rotating code. Both methods require office GPS range.</p>
+      <p class="helper">Scan the lobby QR or enter the rotating code. Both methods require office GPS range. ${multiSession ? "This account can check in/out multiple sessions per day." : "This account can check in once per day."}</p>
       <div class="actions">
-        <button class="btn primary" id="checkIn" ${todayRecords.length || inactive || attendanceBusy ? "disabled" : ""}>Check In by Code</button>
+        <button class="btn primary" id="checkIn" ${(!multiSession && todayRecords.length) || open || inactive || attendanceBusy ? "disabled" : ""}>Check In by Code</button>
         <button class="btn" id="checkOut" ${!open || inactive || attendanceBusy ? "disabled" : ""}>Check Out</button>
       </div>
     </section>
     ${adminUpdates.length ? `<section class="panel notice-panel"><div class="panel-head"><h2>Admin Updates ${helpTip("These are attendance records adjusted by admin, such as absence correction, public holiday, approved correction, or missed checkout fix. Check the remark for the reason/proof.")}</h2></div><div class="update-list">${adminUpdates.map((record) => `<div class="update-item"><div><strong>${formatDate(record.date)}</strong><span>${escapeHtml(record.remark || "No remark provided.")}</span></div><span class="${badgeClass(record.status)}">${escapeHtml(record.status)}</span></div>`).join("")}</div></section>` : ""}
-    <section class="panel"><div class="panel-head"><h2>Monthly Calendar</h2><button class="btn" data-export-calendar="${session.id}">Export Report</button></div>${calendarForEmployee(session.id)}</section>
+    <section class="panel"><div class="panel-head"><h2>Monthly Calendar</h2><div class="actions"><button class="btn" data-export-calendar="${session.id}">Export Report</button><button class="btn" data-export-timesheet="${session.id}">Export Timesheet</button></div></div>${calendarForEmployee(session.id)}</section>
     <section class="panel"><div class="panel-head"><h2>Recent Attendance</h2><button class="btn" data-export-attendance="mine">Export CSV</button></div>${attendanceTable(state.attendance.filter((r) => r.employeeId === session.id).slice(-5).reverse(), false)}</section>
   `;
 }
@@ -938,8 +961,8 @@ function renderRecords(admin) {
   if (!selectedCalendarEmployee || !employee(selectedCalendarEmployee)) selectedCalendarEmployee = state.employees[0]?.id || "";
   const selectedEmp = employee(selectedCalendarEmployee);
   const calendar = admin
-    ? `<section class="panel"><div class="panel-head"><h2>Employee Calendar</h2><div class="actions"><select class="select-control" id="calendarEmployee">${state.employees.map((emp) => `<option value="${emp.id}" ${emp.id === selectedCalendarEmployee ? "selected" : ""}>${escapeHtml(emp.name)}</option>`).join("")}</select><button class="btn" data-export-calendar="${selectedCalendarEmployee}">Export Report</button><button class="btn" data-export-calendar="all">Export All</button></div></div>${selectedEmp ? calendarForEmployee(selectedEmp.id) : `<p class="empty">No employee selected.</p>`}</section>`
-    : `<section class="panel"><div class="panel-head"><h2>Monthly Calendar</h2><button class="btn" data-export-calendar="${session.id}">Export Report</button></div>${calendarForEmployee(session.id)}</section>`;
+    ? `<section class="panel"><div class="panel-head"><h2>Employee Calendar</h2><div class="actions"><select class="select-control" id="calendarEmployee">${state.employees.map((emp) => `<option value="${emp.id}" ${emp.id === selectedCalendarEmployee ? "selected" : ""}>${escapeHtml(emp.name)}</option>`).join("")}</select><button class="btn" data-export-calendar="${selectedCalendarEmployee}">Export Report</button><button class="btn" data-export-timesheet="${selectedCalendarEmployee}">Export Timesheet</button><button class="btn" data-export-calendar="all">Export All</button><button class="btn" data-export-timesheet="all">All Timesheets</button></div></div>${selectedEmp ? calendarForEmployee(selectedEmp.id) : `<p class="empty">No employee selected.</p>`}</section>`
+    : `<section class="panel"><div class="panel-head"><h2>Monthly Calendar</h2><div class="actions"><button class="btn" data-export-calendar="${session.id}">Export Report</button><button class="btn" data-export-timesheet="${session.id}">Export Timesheet</button></div></div>${calendarForEmployee(session.id)}</section>`;
   return `<section class="search-panel">${searchBox(key, "Search records")}</section><section class="panel"><div class="panel-head"><h2>${admin ? `Attendance Records ${helpTip("Admin Update means the record was manually adjusted by admin. Employees can see the status and remark in their own dashboard and attendance history.")}` : "My Attendance Records"}</h2><div class="actions">${admin ? `<button class="btn primary" id="addManualAttendance">Add Manual Status</button>` : ""}<button class="btn" data-export-attendance="${admin ? "all" : "mine"}">Export CSV</button></div></div>${statusLegend()}${attendanceTable(records.slice().reverse(), admin)}</section>${calendar}`;
 }
 
@@ -1013,8 +1036,8 @@ function leaveTable(leaves, admin) {
 }
 
 function renderEmployees() {
-  const employees = state.employees.filter((emp) => includesSearch([emp.id, emp.name, emp.email, emp.department, emp.position, emp.employmentDate, emp.phone, emp.status, emp.statusRemark], "employees"));
-  return `<section class="search-panel">${searchBox("employees", "Search employees")}</section><section class="panel"><div class="panel-head"><h2>Employees</h2><div class="actions"><button class="btn" data-export-employees>Export CSV</button><button class="btn primary" id="addEmployee">Add Employee</button></div></div><div class="table-wrap record-scroll"><table class="employees-table"><thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Password</th><th>Department</th><th>Position</th><th>Joined</th><th>Phone</th><th>Status</th><th>Remark</th><th>Action</th></tr></thead><tbody>${employees.map((emp) => `<tr><td>${emp.id}</td><td>${escapeHtml(emp.name)}</td><td>${escapeHtml(emp.email)}</td><td><code>${escapeHtml(emp.password)}</code></td><td>${escapeHtml(emp.department)}</td><td>${escapeHtml(emp.position)}</td><td>${emp.employmentDate ? formatDate(emp.employmentDate) : "-"}</td><td>${escapeHtml(emp.phone || "-")}</td><td>${emp.status}</td><td>${escapeHtml(emp.statusRemark || "-")}</td><td><button class="btn" data-edit="${emp.id}">Edit</button></td></tr>`).join("") || `<tr><td colspan="11" class="empty">No employees found.</td></tr>`}</tbody></table></div></section>`;
+  const employees = state.employees.filter((emp) => includesSearch([emp.id, emp.name, emp.email, emp.department, emp.position, emp.employmentDate, emp.employeeType, emp.attendanceMode, emp.phone, emp.status, emp.statusRemark], "employees"));
+  return `<section class="search-panel">${searchBox("employees", "Search employees")}</section><section class="panel"><div class="panel-head"><h2>Employees</h2><div class="actions"><button class="btn" data-export-employees>Export CSV</button><button class="btn primary" id="addEmployee">Add Employee</button></div></div><div class="table-wrap record-scroll"><table class="employees-table"><thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Password</th><th>Type</th><th>Attendance Mode</th><th>Department</th><th>Position</th><th>Joined</th><th>Phone</th><th>Status</th><th>Remark</th><th>Action</th></tr></thead><tbody>${employees.map((emp) => `<tr><td>${emp.id}</td><td>${escapeHtml(emp.name)}</td><td>${escapeHtml(emp.email)}</td><td><code>${escapeHtml(emp.password)}</code></td><td>${escapeHtml(emp.employeeType)}</td><td>${escapeHtml(emp.attendanceMode)}</td><td>${escapeHtml(emp.department)}</td><td>${escapeHtml(emp.position)}</td><td>${emp.employmentDate ? formatDate(emp.employmentDate) : "-"}</td><td>${escapeHtml(emp.phone || "-")}</td><td>${emp.status}</td><td>${escapeHtml(emp.statusRemark || "-")}</td><td><button class="btn" data-edit="${emp.id}">Edit</button></td></tr>`).join("") || `<tr><td colspan="13" class="empty">No employees found.</td></tr>`}</tbody></table></div></section>`;
 }
 
 function renderAdmins() {
@@ -1099,6 +1122,7 @@ function bindEvents() {
   document.querySelectorAll("[data-export-attendance]").forEach((button) => button.addEventListener("click", () => exportAttendance(button.dataset.exportAttendance)));
   document.querySelectorAll("[data-export-requests]").forEach((button) => button.addEventListener("click", () => exportRequests(button.dataset.exportRequests)));
   document.querySelectorAll("[data-export-calendar]").forEach((button) => button.addEventListener("click", () => exportCalendar(button.dataset.exportCalendar)));
+  document.querySelectorAll("[data-export-timesheet]").forEach((button) => button.addEventListener("click", () => exportTimesheet(button.dataset.exportTimesheet)));
   document.querySelector("[data-export-employees]")?.addEventListener("click", exportEmployees);
   document.querySelector("[data-export-audit]")?.addEventListener("click", exportAudit);
   document.querySelectorAll("[data-search-key]").forEach((input) => input.addEventListener("input", () => {
@@ -1184,7 +1208,7 @@ async function checkIn(method) {
   if (attendanceBusy) return toast("Attendance action is already processing.");
   if (!isActiveEmployee()) return toast("Inactive account cannot check in.");
   if (currentOpenRecord()) return toast("Already checked in.");
-  if (todaysRecords().length) return toast("You have already checked in today.");
+  if (!allowsMultipleSessions() && todaysRecords().length) return toast("You have already checked in today.");
   attendanceBusy = true;
   render();
   let verification;
@@ -1196,7 +1220,7 @@ async function checkIn(method) {
     render();
     return toast(error.message || "Location check failed.");
   }
-  if (currentOpenRecord() || todaysRecords().length) {
+  if (currentOpenRecord() || (!allowsMultipleSessions() && todaysRecords().length)) {
     attendanceBusy = false;
     render();
     return toast("You have already checked in today.");
@@ -1357,8 +1381,8 @@ function exportRequests(scope) {
 }
 
 function exportEmployees() {
-  const rows = state.employees.map((emp) => [emp.id, emp.name, emp.email, emp.password, emp.department, emp.position, emp.employmentDate || "", emp.phone || "", emp.status, emp.statusRemark || "", emp.statusUpdatedBy || "", emp.statusUpdatedAt || ""]);
-  downloadCSV(`${safeName(`${companyReportName()}-employee-list-${today()}`)}.csv`, ["ID", "Name", "Email", "Password", "Department", "Position", "Employment Date", "Phone", "Status", "Status Remark", "Updated By", "Updated At"], rows);
+  const rows = state.employees.map((emp) => [emp.id, emp.name, emp.email, emp.password, emp.employeeType, emp.attendanceMode, emp.department, emp.position, emp.employmentDate || "", emp.phone || "", emp.status, emp.statusRemark || "", emp.statusUpdatedBy || "", emp.statusUpdatedAt || ""]);
+  downloadCSV(`${safeName(`${companyReportName()}-employee-list-${today()}`)}.csv`, ["ID", "Name", "Email", "Password", "Employee Type", "Attendance Mode", "Department", "Position", "Employment Date", "Phone", "Status", "Status Remark", "Updated By", "Updated At"], rows);
 }
 
 function exportAudit() {
@@ -1407,6 +1431,35 @@ function exportCalendar(target) {
   </style></head><body><header><h1>${escapeHtml(title)}</h1><div class="meta">Company: ${escapeHtml(companyReportName())} | Dataset: ${escapeHtml(companyKey)} | Generated: ${new Date().toLocaleString("en-GB")}</div></header>${sections}</body></html>`;
   const fileBase = target === "all" ? `${companyReportName()}-calendar-report-${monthLabel()}` : `${companyReportName()}-${employees[0].name}-calendar-report-${monthLabel()}`;
   downloadHTML(`${safeName(fileBase)}.html`, html);
+}
+
+function exportTimesheet(target) {
+  const employees = target === "all" ? state.employees : [employee(target || session.id)].filter(Boolean);
+  if (!employees.length) return toast("No employee selected for timesheet export.");
+  const dates = monthDates();
+  const rows = [];
+  employees.forEach((emp) => {
+    dates.forEach((dateValue) => {
+      const records = recordsForDate(emp.id, dateValue);
+      const totalMinutes = totalMinutesForRecords(records);
+      rows.push([
+        emp.name,
+        emp.id,
+        emp.employeeType,
+        emp.attendanceMode,
+        dateValue,
+        formatDate(dateValue),
+        records.length,
+        formatMinutes(totalMinutes),
+        records.map((record) => record.checkIn).filter(Boolean).join(" | "),
+        records.map((record) => record.checkOut).filter(Boolean).join(" | "),
+        records.map((record) => record.status).join(" | ") || calendarStatus(emp.id, dateValue).label,
+        records.map((record) => record.remark).filter(Boolean).join(" | ")
+      ]);
+    });
+  });
+  const fileBase = target === "all" ? `${companyReportName()}-monthly-timesheets-${monthLabel()}` : `${companyReportName()}-${employees[0].name}-timesheet-${monthLabel()}`;
+  downloadCSV(`${safeName(fileBase)}.csv`, ["Employee", "Employee ID", "Employee Type", "Attendance Mode", "Date", "Formatted Date", "Sessions", "Total Hours", "Check Ins", "Check Outs", "Status", "Remarks"], rows);
 }
 
 function openManualAttendanceModal() {
@@ -1480,18 +1533,21 @@ function saveManualAttendance(event) {
 }
 
 function openEmployeeModal(id) {
-  const emp = employee(id) || { id: `EMP${String(state.employees.length + 1).padStart(3, "0")}`, name: "", email: "", password: "employee123", department: "", position: "", employmentDate: today(), phone: "", status: "Active", statusRemark: "" };
+  const emp = employee(id) || { id: `EMP${String(state.employees.length + 1).padStart(3, "0")}`, name: "", email: "", password: "employee123", employeeType: "Permanent", attendanceMode: "Single Daily", department: "", position: "", employmentDate: today(), phone: "", status: "Active", statusRemark: "" };
   const modal = document.querySelector("#modal");
-  modal.innerHTML = `<form class="modal" id="employeeForm"><h2>${id ? "Edit" : "Add"} Employee</h2><label class="field"><span>ID</span><input id="empId" value="${emp.id}" ${id ? "readonly" : ""}></label><label class="field"><span>Name</span><input id="empName" value="${escapeHtml(emp.name)}" required></label><label class="field"><span>Email</span><input id="empEmail" type="email" value="${escapeHtml(emp.email)}" required></label><label class="field"><span>Password</span><input id="empPassword" value="${escapeHtml(emp.password)}" required></label><label class="field"><span>Department</span><input id="empDept" value="${escapeHtml(emp.department)}"></label><label class="field"><span>Position</span><input id="empPos" value="${escapeHtml(emp.position)}"></label><label class="field"><span>Employment Date</span><input id="empEmploymentDate" type="date" value="${emp.employmentDate || today()}" required></label><label class="field"><span>Phone</span><input id="empPhone" value="${escapeHtml(emp.phone || "")}"></label><label class="field"><span>Status</span><select id="empStatus"><option ${emp.status === "Active" ? "selected" : ""}>Active</option><option ${emp.status === "Inactive" ? "selected" : ""}>Inactive</option></select></label><label class="field"><span>Status Remark / Proof</span><textarea id="empStatusRemark" placeholder="Required if status is changed">${escapeHtml(emp.statusRemark || "")}</textarea></label><div class="modal-actions"><button class="btn primary" type="submit">Save</button><button class="btn" type="button" id="closeModal">Cancel</button></div></form>`;
+  modal.innerHTML = `<form class="modal" id="employeeForm"><h2>${id ? "Edit" : "Add"} Employee</h2><label class="field"><span>ID</span><input id="empId" value="${emp.id}" ${id ? "readonly" : ""}></label><label class="field"><span>Name</span><input id="empName" value="${escapeHtml(emp.name)}" required></label><label class="field"><span>Email</span><input id="empEmail" type="email" value="${escapeHtml(emp.email)}" required></label><label class="field"><span>Password</span><input id="empPassword" value="${escapeHtml(emp.password)}" required></label><label class="field"><span class="label-row">Employee Type ${helpTip("Permanent is usually full-time long-term staff. Part-time and Contract employees often use multiple sessions so daily total hours can be calculated for payroll.")}</span><select id="empType"><option ${emp.employeeType === "Permanent" ? "selected" : ""}>Permanent</option><option ${emp.employeeType === "Part-time" ? "selected" : ""}>Part-time</option><option ${emp.employeeType === "Contract" ? "selected" : ""}>Contract</option><option ${emp.employeeType === "Intern" ? "selected" : ""}>Intern</option></select></label><label class="field"><span class="label-row">Attendance Mode ${helpTip("Single Daily allows one check-in per day. Multiple Sessions allows repeated check-in/out sessions and totals all hours for that day.")}</span><select id="empAttendanceMode"><option ${emp.attendanceMode === "Single Daily" ? "selected" : ""}>Single Daily</option><option ${emp.attendanceMode === "Multiple Sessions" ? "selected" : ""}>Multiple Sessions</option></select></label><label class="field"><span>Department</span><input id="empDept" value="${escapeHtml(emp.department)}"></label><label class="field"><span>Position</span><input id="empPos" value="${escapeHtml(emp.position)}"></label><label class="field"><span>Employment Date</span><input id="empEmploymentDate" type="date" value="${emp.employmentDate || today()}" required></label><label class="field"><span>Phone</span><input id="empPhone" value="${escapeHtml(emp.phone || "")}"></label><label class="field"><span>Status</span><select id="empStatus"><option ${emp.status === "Active" ? "selected" : ""}>Active</option><option ${emp.status === "Inactive" ? "selected" : ""}>Inactive</option></select></label><label class="field"><span>Status Remark / Proof</span><textarea id="empStatusRemark" placeholder="Required if status is changed">${escapeHtml(emp.statusRemark || "")}</textarea></label><div class="modal-actions"><button class="btn primary" type="submit">Save</button><button class="btn" type="button" id="closeModal">Cancel</button></div></form>`;
   modal.classList.add("show");
   document.querySelector("#closeModal").addEventListener("click", closeModal);
+  document.querySelector("#empType").addEventListener("change", (event) => {
+    if (["Part-time", "Contract"].includes(event.target.value)) document.querySelector("#empAttendanceMode").value = "Multiple Sessions";
+  });
   document.querySelector("#employeeForm").addEventListener("submit", (event) => {
     event.preventDefault();
     const previous = employee(id);
     const statusRemark = document.querySelector("#empStatusRemark").value.trim();
     const nextStatus = document.querySelector("#empStatus").value;
     if (previous && previous.status !== nextStatus && !statusRemark) return toast("Status change requires a remark/proof.");
-    const payload = { id: document.querySelector("#empId").value.trim(), name: document.querySelector("#empName").value.trim(), email: document.querySelector("#empEmail").value.trim(), password: document.querySelector("#empPassword").value.trim() || "employee123", department: document.querySelector("#empDept").value.trim(), position: document.querySelector("#empPos").value.trim(), employmentDate: document.querySelector("#empEmploymentDate").value, phone: document.querySelector("#empPhone").value.trim(), status: nextStatus, statusRemark, statusUpdatedAt: previous && previous.status !== nextStatus ? new Date().toLocaleString("en-GB", { hour12: false }) : emp.statusUpdatedAt || "", statusUpdatedBy: previous && previous.status !== nextStatus ? session.name : emp.statusUpdatedBy || "" };
+    const payload = { id: document.querySelector("#empId").value.trim(), name: document.querySelector("#empName").value.trim(), email: document.querySelector("#empEmail").value.trim(), password: document.querySelector("#empPassword").value.trim() || "employee123", employeeType: document.querySelector("#empType").value, attendanceMode: document.querySelector("#empAttendanceMode").value, department: document.querySelector("#empDept").value.trim(), position: document.querySelector("#empPos").value.trim(), employmentDate: document.querySelector("#empEmploymentDate").value, phone: document.querySelector("#empPhone").value.trim(), status: nextStatus, statusRemark, statusUpdatedAt: previous && previous.status !== nextStatus ? new Date().toLocaleString("en-GB", { hour12: false }) : emp.statusUpdatedAt || "", statusUpdatedBy: previous && previous.status !== nextStatus ? session.name : emp.statusUpdatedBy || "" };
     if (!payload.id || !payload.name || !payload.email) return toast("Fill in employee ID, name, and email.");
     if (payload.password.length < 8) return toast("Employee password must be at least 8 characters.");
     const duplicateEmployeeId = state.employees.some((item) => item.id === payload.id && item.id !== id);

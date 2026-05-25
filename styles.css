@@ -492,7 +492,7 @@ main { min-width: 0; }
 .record-scroll { max-height: 470px; overflow: auto; -webkit-overflow-scrolling: touch; }
 .record-scroll thead th { position: sticky; top: 0; z-index: 1; background: var(--surface); }
 table { width: 100%; min-width: 760px; border-collapse: collapse; }
-.employees-table { min-width: 1180px; }
+.employees-table { min-width: 1380px; }
 th, td { padding: 11px 9px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; }
 th { color: var(--muted); text-transform: uppercase; font-size: 0.76rem; letter-spacing: 0.04em; }
 .check-line {
