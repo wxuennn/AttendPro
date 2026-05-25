@@ -439,6 +439,24 @@ function totalHoursForDate(employeeId, dateValue) {
   return formatMinutes(totalMinutesForRecords(recordsForDate(employeeId, dateValue)));
 }
 
+function sessionLabel(record, records = []) {
+  if (record.sessionLabel) return record.sessionLabel;
+  if (record.sessionNo) return `Session ${record.sessionNo}`;
+  if (!record.checkIn) return "";
+  const sameDayRecords = records.length ? records : recordsForDate(record.employeeId, record.date).filter((item) => item.checkIn);
+  const index = sameDayRecords.findIndex((item) => item.id === record.id);
+  return sameDayRecords.length > 1 ? `Session ${index >= 0 ? index + 1 : 1}` : "Session 1";
+}
+
+function calendarDayLabel(employeeId, dateValue, status) {
+  const records = recordsForDate(employeeId, dateValue).filter((record) => record.checkIn);
+  const totalMinutes = totalMinutesForRecords(records);
+  if (!records.length) return status.label;
+  const sessionText = records.length > 1 ? `${records.length} sessions` : "1 session";
+  const timeText = totalMinutes ? formatMinutes(totalMinutes) : "open";
+  return `${status.label} - ${sessionText} - ${timeText}`;
+}
+
 function isActiveEmployee(id = session?.id) {
   const emp = employee(id);
   return !emp || emp.status !== "Inactive";
@@ -972,7 +990,7 @@ function statusLegend() {
 
 function attendanceTable(records, admin) {
   if (!records.length) return `<p class="empty">No records yet.</p>`;
-  return `<div class="table-wrap record-scroll"><table class="responsive-table"><thead><tr>${admin ? "<th>Employee</th>" : ""}<th>Date</th><th>In</th><th>Out</th><th>Hours</th><th>Status</th><th>Verify</th><th>Remark</th>${admin ? "<th>Updated By</th><th>Action</th>" : ""}</tr></thead><tbody>${records.map((r) => `<tr>${admin ? `<td data-label="Employee">${escapeHtml(employee(r.employeeId)?.name || r.employeeId)}</td>` : ""}<td data-label="Date">${formatDate(r.date)}</td><td data-label="In">${r.checkIn || "-"}</td><td data-label="Out">${r.checkOut || "-"}</td><td data-label="Hours">${r.hours || "-"}</td><td data-label="Status"><span class="${badgeClass(r.status)}">${r.status}</span></td><td data-label="Verify">${escapeHtml(displayVerification(r.verification))}</td><td data-label="Remark">${escapeHtml(r.remark || "-")}</td>${admin ? `<td data-label="Updated By">${escapeHtml(r.updatedBy || "-")}</td><td data-label="Action"><button class="btn danger" data-delete-attendance="${r.id}">Delete</button></td>` : ""}</tr>`).join("")}</tbody></table></div>`;
+  return `<div class="table-wrap record-scroll"><table class="responsive-table"><thead><tr>${admin ? "<th>Employee</th>" : ""}<th>Date</th><th>Session</th><th>In</th><th>Out</th><th>Hours</th><th>Status</th><th>Verify</th><th>Remark</th>${admin ? "<th>Updated By</th><th>Action</th>" : ""}</tr></thead><tbody>${records.map((r) => `<tr>${admin ? `<td data-label="Employee">${escapeHtml(employee(r.employeeId)?.name || r.employeeId)}</td>` : ""}<td data-label="Date">${formatDate(r.date)}</td><td data-label="Session">${escapeHtml(sessionLabel(r) || "-")}</td><td data-label="In">${r.checkIn || "-"}</td><td data-label="Out">${r.checkOut || "-"}</td><td data-label="Hours">${r.hours || "-"}</td><td data-label="Status"><span class="${badgeClass(r.status)}">${r.status}</span></td><td data-label="Verify">${escapeHtml(displayVerification(r.verification))}</td><td data-label="Remark">${escapeHtml(r.remark || "-")}</td>${admin ? `<td data-label="Updated By">${escapeHtml(r.updatedBy || "-")}</td><td data-label="Action"><button class="btn danger" data-delete-attendance="${r.id}">Delete</button></td>` : ""}</tr>`).join("")}</tbody></table></div>`;
 }
 
 function calendarForEmployee(employeeId) {
@@ -985,7 +1003,7 @@ function calendarForEmployee(employeeId) {
       ${Array.from({ length: blanks }, () => `<div class="calendar-cell empty-cell"></div>`).join("")}
       ${dates.map((dateValue) => {
         const status = calendarStatus(employeeId, dateValue);
-        return `<div class="calendar-cell ${status.type}"><strong>${Number(dateValue.slice(-2))}</strong><span>${escapeHtml(status.label)}</span></div>`;
+        return `<div class="calendar-cell ${status.type}"><strong>${Number(dateValue.slice(-2))}</strong><span>${escapeHtml(calendarDayLabel(employeeId, dateValue, status))}</span></div>`;
       }).join("")}
     </div>
     ${calendarMonthSummary(employeeId, dates)}
@@ -1228,7 +1246,8 @@ async function checkIn(method) {
   const time = nowTime();
   const first = todaysRecords().length === 0;
   const status = !isWorkingDay(today()) ? "Off-day Work" : first && minutes(time) > minutes(state.company.lateAfter) ? "Late" : "Checked In";
-  state.attendance.push({ id: `ATT${Date.now()}`, employeeId: session.id, date: today(), checkIn: time, checkOut: "", hours: "", status, verification });
+  const sessionNo = todaysRecords().filter((record) => record.checkIn).length + 1;
+  state.attendance.push({ id: `ATT${Date.now()}`, employeeId: session.id, date: today(), checkIn: time, checkOut: "", hours: "", status, verification, sessionNo, sessionLabel: `Session ${sessionNo}` });
   addAudit("Check in", `${session.name} checked in using ${verification}.`);
   saveState("Attendance updated.");
   attendanceBusy = false;
@@ -1370,8 +1389,8 @@ async function useMyLocationForOffice() {
 
 function exportAttendance(scope) {
   const records = scope === "all" ? state.attendance : state.attendance.filter((item) => item.employeeId === session.id);
-  const rows = records.map((r) => [employee(r.employeeId)?.name || r.employeeId, r.employeeId, r.date, r.checkIn, r.checkOut || "", r.hours || "", r.status, displayVerification(r.verification), r.remark || "", r.updatedBy || "", r.updatedAt || ""]);
-  downloadCSV(`${safeName(exportBase(scope, "attendance-records"))}.csv`, ["Employee", "Employee ID", "Date", "Check In", "Check Out", "Hours", "Status", "Verification", "Remark", "Updated By", "Updated At"], rows);
+  const rows = records.map((r) => [employee(r.employeeId)?.name || r.employeeId, r.employeeId, r.date, sessionLabel(r), r.checkIn, r.checkOut || "", r.hours || "", r.status, displayVerification(r.verification), r.remark || "", r.updatedBy || "", r.updatedAt || ""]);
+  downloadCSV(`${safeName(exportBase(scope, "attendance-records"))}.csv`, ["Employee", "Employee ID", "Date", "Session", "Check In", "Check Out", "Hours", "Status", "Verification", "Remark", "Updated By", "Updated At"], rows);
 }
 
 function exportRequests(scope) {
@@ -1400,12 +1419,13 @@ function exportCalendar(target) {
       <p>${escapeHtml(emp.department || "-")} | ${escapeHtml(emp.position || "-")} | ${escapeHtml(emp.id)} | Joined: ${emp.employmentDate ? formatDate(emp.employmentDate) : "-"}</p>
       ${calendarForEmployee(emp.id)}
       <table>
-        <thead><tr><th>Date</th><th>Working Day</th><th>Status</th><th>Check In</th><th>Check Out</th></tr></thead>
+        <thead><tr><th>Date</th><th>Working Day</th><th>Status</th><th>Sessions</th><th>Total Hours</th><th>Check In</th><th>Check Out</th></tr></thead>
         <tbody>
           ${monthDates().map((dateValue) => {
             const records = attendanceForDate(emp.id, dateValue);
             const status = calendarStatus(emp.id, dateValue);
-            return `<tr><td>${formatDate(dateValue)}</td><td>${isWorkingDay(dateValue) ? "Yes" : "No"}</td><td>${escapeHtml(status.label)}</td><td>${records.map((r) => r.checkIn).filter(Boolean).join(", ") || "-"}</td><td>${records.map((r) => r.checkOut || "-").join(", ") || "-"}</td></tr>`;
+            const checkedRecords = records.filter((record) => record.checkIn);
+            return `<tr><td>${formatDate(dateValue)}</td><td>${isWorkingDay(dateValue) ? "Yes" : "No"}</td><td>${escapeHtml(calendarDayLabel(emp.id, dateValue, status))}</td><td>${checkedRecords.length || "-"}</td><td>${checkedRecords.length ? formatMinutes(totalMinutesForRecords(checkedRecords)) : "-"}</td><td>${records.map((r) => `${sessionLabel(r, checkedRecords) || "Record"}: ${r.checkIn}`).filter((item) => !item.endsWith(": ")).join("<br>") || "-"}</td><td>${records.map((r) => `${sessionLabel(r, checkedRecords) || "Record"}: ${r.checkOut || "-"}`).join("<br>") || "-"}</td></tr>`;
           }).join("")}
         </tbody>
       </table>
@@ -1451,6 +1471,7 @@ function exportTimesheet(target) {
         formatDate(dateValue),
         records.length,
         formatMinutes(totalMinutes),
+        records.map((record) => sessionLabel(record, records)).filter(Boolean).join(" | "),
         records.map((record) => record.checkIn).filter(Boolean).join(" | "),
         records.map((record) => record.checkOut).filter(Boolean).join(" | "),
         records.map((record) => record.status).join(" | ") || calendarStatus(emp.id, dateValue).label,
@@ -1459,7 +1480,7 @@ function exportTimesheet(target) {
     });
   });
   const fileBase = target === "all" ? `${companyReportName()}-monthly-timesheets-${monthLabel()}` : `${companyReportName()}-${employees[0].name}-timesheet-${monthLabel()}`;
-  downloadCSV(`${safeName(fileBase)}.csv`, ["Employee", "Employee ID", "Employee Type", "Attendance Mode", "Date", "Formatted Date", "Sessions", "Total Hours", "Check Ins", "Check Outs", "Status", "Remarks"], rows);
+  downloadCSV(`${safeName(fileBase)}.csv`, ["Employee", "Employee ID", "Employee Type", "Attendance Mode", "Date", "Formatted Date", "Sessions", "Total Hours", "Session Labels", "Check Ins", "Check Outs", "Status", "Remarks"], rows);
 }
 
 function openManualAttendanceModal() {
@@ -1495,12 +1516,19 @@ function saveManualAttendance(event) {
       .filter((dateValue) => !emp.employmentDate || dateValue >= emp.employmentDate)
       .forEach((dateValue) => {
         const existing = state.attendance.find((item) => item.employeeId === emp.id && item.date === dateValue);
+        const dayCheckIns = recordsForDate(emp.id, dateValue).filter((record) => record.checkIn);
+        const existingIndex = existing ? dayCheckIns.findIndex((record) => record.id === existing.id) : -1;
+        const nextSessionNo = existingIndex >= 0 ? existingIndex + 1 : dayCheckIns.length + 1;
         if (existing) {
           existing.status = status;
           existing.remark = remark;
           existing.verification = "Admin manual update";
           existing.updatedBy = session.name;
           existing.updatedAt = new Date().toLocaleString("en-GB", { hour12: false });
+          if (manualCheckIn && !existing.sessionNo) {
+            existing.sessionNo = nextSessionNo;
+            existing.sessionLabel = `Manual Session ${nextSessionNo}`;
+          }
           if (manualCheckIn || manualCheckOut || clearTimes) {
             existing.checkIn = manualCheckIn || "";
             existing.checkOut = manualCheckOut || "";
@@ -1516,6 +1544,8 @@ function saveManualAttendance(event) {
             hours: manualCheckIn && manualCheckOut ? duration(manualCheckIn, manualCheckOut) : "",
             status,
             verification: "Admin manual update",
+            sessionNo: manualCheckIn ? nextSessionNo : "",
+            sessionLabel: manualCheckIn ? `Manual Session ${nextSessionNo}` : "",
             remark,
             updatedBy: session.name,
             updatedAt: new Date().toLocaleString("en-GB", { hour12: false })
