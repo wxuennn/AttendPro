@@ -81,10 +81,16 @@ function setDatasetPassword(value) {
 
 function loadLocalState() {
   const raw = localStorage.getItem(STORAGE_KEY);
-  return normalize(raw ? JSON.parse(raw) : seedState);
+  try {
+    return normalize(raw ? JSON.parse(raw) : seedState);
+  } catch {
+    localStorage.removeItem(STORAGE_KEY);
+    return normalize(seedState);
+  }
 }
 
 function normalize(input) {
+  input = input || {};
   const legacyPolicy = input.attendancePolicy || {};
   return {
     ...structuredClone(seedState),
@@ -202,7 +208,8 @@ function startSync() {
   }
 
   setInterval(async () => {
-    if ((!usingFirebase() && location.protocol === "file:") || document.hidden || !session || !datasetPassword) return;
+    const qrDisplay = isQrDisplayMode();
+    if ((!usingFirebase() && location.protocol === "file:") || document.hidden || (!session && !qrDisplay) || !datasetPassword) return;
     try {
       let next;
       if (usingFirebase()) {
@@ -218,14 +225,26 @@ function startSync() {
       const text = JSON.stringify(next);
       if (text !== lastStateText) {
         setState(next);
-        if (session) render();
+        if (session || qrDisplay) render();
       }
     } catch {}
   }, 2000);
 }
 
+function isQrDisplayMode() {
+  return new URLSearchParams(location.search).get("display") === "qr";
+}
+
 function today() {
-  return new Date().toISOString().slice(0, 10);
+  return localDateKey(new Date());
+}
+
+function localDateKey(value) {
+  const date = value instanceof Date ? value : new Date(`${value}T00:00:00`);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 
 function nowTime() {
@@ -312,12 +331,23 @@ function employee(id) {
   return state.employees.find((item) => item.id === id);
 }
 
+function sessionAccount() {
+  if (!session) return null;
+  return session.role === "admin"
+    ? state.admins.find((admin) => admin.id === session.id)
+    : employee(session.id);
+}
+
 function currentOpenRecord(id = session?.id) {
-  return state.attendance.find((item) => item.employeeId === id && item.date === today() && !item.checkOut);
+  return state.attendance.find((item) => item.employeeId === id && item.date === today() && isOpenAttendanceRecord(item));
 }
 
 function todaysRecords(id = session?.id) {
   return state.attendance.filter((item) => item.employeeId === id && item.date === today());
+}
+
+function isOpenAttendanceRecord(record) {
+  return Boolean(record.checkIn && !record.checkOut && ["Checked In", "Late", "Off-day Work"].includes(record.status));
 }
 
 function isActiveEmployee(id = session?.id) {
@@ -332,6 +362,10 @@ function isWorkingDay(dateValue) {
 
 function requestsForDate(employeeId, dateValue) {
   return state.leaves.filter((request) => request.employeeId === employeeId && request.from <= dateValue && request.to >= dateValue);
+}
+
+function requestsOverlap(aFrom, aTo, bFrom, bTo) {
+  return aFrom <= bTo && bFrom <= aTo;
 }
 
 function approvedRequestForDate(employeeId, dateValue) {
@@ -374,7 +408,7 @@ function calendarStatus(employeeId, dateValue) {
   if (approved) return { label: requestCalendarLabel(approved), type: approved.type.includes("WFH") ? "wfh" : "approved" };
   if (pending) return { label: `Pending ${requestCalendarLabel(pending)}`, type: "pending" };
   if (rejected) return { label: `Rejected ${requestCalendarLabel(rejected)}`, type: "rejected" };
-  if (isWorkingDay(dateValue) && dateValue <= today()) return { label: "Absent", type: "absent" };
+  if (isWorkingDay(dateValue) && dateValue < today()) return { label: "Absent", type: "absent" };
   return { label: "Off Day", type: "off" };
 }
 
@@ -405,7 +439,7 @@ function dateRange(from, to) {
   const end = new Date(`${to}T00:00:00`);
   const dates = [];
   for (let cursor = start; cursor <= end; cursor.setDate(cursor.getDate() + 1)) {
-    dates.push(cursor.toISOString().slice(0, 10));
+    dates.push(localDateKey(cursor));
   }
   return dates;
 }
@@ -589,9 +623,12 @@ function passwordField(id, label, value = "", placeholder = "", autocomplete = "
 }
 
 function render() {
-  if (new URLSearchParams(location.search).get("display") === "qr") {
+  if (isQrDisplayMode()) {
     renderQrDisplay();
     return;
+  }
+  if (session && !sessionAccount()) {
+    session = null;
   }
   if (!session) return renderLogin();
   renderApp();
@@ -1104,8 +1141,11 @@ function submitLeave(event) {
   const from = document.querySelector("#leaveFrom").value;
   const to = document.querySelector("#leaveTo").value;
   const duration = document.querySelector("#leaveDuration").value;
+  if (from < today()) return toast("Start date cannot be in the past.");
   if (to < from) return toast("End date must be after start date.");
   if (duration !== "Full Day" && from !== to) return toast("Half day requests must use the same From and To date.");
+  const duplicate = state.leaves.some((leave) => leave.employeeId === session.id && ["Pending", "Approved"].includes(leave.status) && requestsOverlap(from, to, leave.from, leave.to));
+  if (duplicate) return toast("A pending or approved request already exists for this date range.");
   const leave = { id: `LEV${Date.now()}`, employeeId: session.id, type: document.querySelector("#leaveType").value, duration, from, to, reason: document.querySelector("#leaveReason").value.trim(), status: "Pending", reviewedBy: "" };
   state.leaves.push(leave);
   addAudit("Request submitted", `${session.name} submitted ${leave.type} (${duration}).`);
@@ -1350,6 +1390,12 @@ function openEmployeeModal(id) {
     const nextStatus = document.querySelector("#empStatus").value;
     if (previous && previous.status !== nextStatus && !statusRemark) return toast("Status change requires a remark/proof.");
     const payload = { id: document.querySelector("#empId").value.trim(), name: document.querySelector("#empName").value.trim(), email: document.querySelector("#empEmail").value.trim(), password: document.querySelector("#empPassword").value.trim() || "employee123", department: document.querySelector("#empDept").value.trim(), position: document.querySelector("#empPos").value.trim(), employmentDate: document.querySelector("#empEmploymentDate").value, phone: document.querySelector("#empPhone").value.trim(), status: nextStatus, statusRemark, statusUpdatedAt: previous && previous.status !== nextStatus ? new Date().toLocaleString("en-GB", { hour12: false }) : emp.statusUpdatedAt || "", statusUpdatedBy: previous && previous.status !== nextStatus ? session.name : emp.statusUpdatedBy || "" };
+    if (!payload.id || !payload.name || !payload.email) return toast("Fill in employee ID, name, and email.");
+    const duplicateEmployeeId = state.employees.some((item) => item.id === payload.id && item.id !== id);
+    if (duplicateEmployeeId) return toast("Employee ID already exists.");
+    const duplicateEmployeeEmail = state.employees.some((item) => item.email.toLowerCase() === payload.email.toLowerCase() && item.id !== id);
+    const duplicateAdminEmail = state.admins.some((item) => item.email.toLowerCase() === payload.email.toLowerCase());
+    if (duplicateEmployeeEmail || duplicateAdminEmail) return toast("Email already used.");
     const index = state.employees.findIndex((item) => item.id === payload.id);
     if (index >= 0) state.employees[index] = payload;
     else state.employees.push(payload);
