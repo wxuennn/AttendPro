@@ -16,6 +16,7 @@ const seedState = {
     officeLatitude: 3.139,
     officeLongitude: 101.6869,
     officeRadius: 300,
+    autoCheckout: false,
     workingDays: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
   },
   datasetPassword: "",
@@ -36,7 +37,11 @@ let serverReady = false;
 let lastStateText = JSON.stringify(state);
 let pendingQr = new URLSearchParams(location.search).get("qrCheckIn");
 let selectedCalendarEmployee = "";
+let selectedAttendanceEmployee = "";
+let selectedAttendanceDate = today();
 let attendanceBusy = false;
+let geofenceWatchId = null;
+let geofenceCheckoutBusy = false;
 const searchTerms = {};
 
 const app = document.querySelector("#app");
@@ -106,10 +111,18 @@ function normalize(input) {
       officeRadius: Number((input.company || {}).officeRadius ?? legacyPolicy.radiusMeters ?? seedState.company.officeRadius),
       lateAfter: (input.company || {}).lateAfter || legacyPolicy.lateAfter || seedState.company.lateAfter,
       codeSecret: (input.company || {}).codeSecret || legacyPolicy.onsiteSecret || seedState.company.codeSecret,
-      codeInterval: Number((input.company || {}).codeInterval ?? legacyPolicy.codeIntervalSeconds ?? seedState.company.codeInterval)
+      codeInterval: Number((input.company || {}).codeInterval ?? legacyPolicy.codeIntervalSeconds ?? seedState.company.codeInterval),
+      autoCheckout: Boolean((input.company || {}).autoCheckout)
     },
     datasetPassword: input.datasetPassword || seedState.datasetPassword,
-    admins: input.admins || seedState.admins,
+    admins: (input.admins || seedState.admins).map((admin, index) => {
+      const code = adminCode(admin.name, index);
+      return {
+        ...admin,
+        name: code,
+        personName: admin.personName || (admin.name && admin.name !== code ? admin.name : "")
+      };
+    }),
     employees: (input.employees || seedState.employees).map((emp) => ({
       ...emp,
       employmentDate: emp.employmentDate || "",
@@ -601,7 +614,7 @@ function createDatasetState(adminEmail, adminPassword) {
       name: readableDatasetName(companyKey),
       officeName: "Company Office"
     },
-    admins: [{ id: "ADM001", name: adminName || "Admin", email: adminEmail, password: adminPassword }],
+    admins: [{ id: "ADM001", name: "Admin 1", personName: adminName || "Admin", email: adminEmail, password: adminPassword }],
     employees: [],
     attendance: [],
     leaves: [],
@@ -714,7 +727,7 @@ function addAudit(action, details) {
   state.auditLogs.unshift({
     id: `AUD${Date.now()}`,
     at: new Date().toLocaleString("en-GB", { hour12: false }),
-    actor: session ? `${session.name} (${session.role})` : "System",
+    actor: auditActorName(),
     action,
     details
   });
@@ -733,7 +746,62 @@ function passwordField(id, label, value = "", placeholder = "", autocomplete = "
   return `<label class="field password-field"><span>${label}</span><div class="password-control"><input id="${id}" type="password" value="${escapeHtml(value)}" placeholder="${escapeHtml(placeholder)}" autocomplete="${autocomplete}" ${extra} required><button class="password-toggle" type="button" data-toggle-password="${id}" aria-label="Show or hide password"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2.5 12s3.5-6 9.5-6 9.5 6 9.5 6-3.5 6-9.5 6-9.5-6-9.5-6Z"></path><circle cx="12" cy="12" r="2.8"></circle></svg></button></div></label>`;
 }
 
+function adminCode(value, index = 0) {
+  const match = String(value || "").match(/admin\s*([1-3])/i);
+  return match ? `Admin ${match[1]}` : `Admin ${Math.min(index + 1, 3)}`;
+}
+
+function nextAdminId() {
+  for (let index = 1; index <= 3; index += 1) {
+    const id = `ADM${String(index).padStart(3, "0")}`;
+    if (!state.admins.some((admin) => admin.id === id)) return id;
+  }
+  return `ADM${Date.now()}`;
+}
+
+function auditActorName() {
+  if (!session) return "System";
+  if (session.role === "admin") return `${session.name}${session.personName ? ` (${session.personName})` : ""} (admin)`;
+  return `${session.name} (employee)`;
+}
+
+function stopGeofenceWatch() {
+  if (geofenceWatchId !== null && navigator.geolocation) {
+    navigator.geolocation.clearWatch(geofenceWatchId);
+  }
+  geofenceWatchId = null;
+  geofenceCheckoutBusy = false;
+}
+
+function startGeofenceWatch() {
+  if (!session || session.role !== "employee" || !state.company.autoCheckout || geofenceWatchId !== null || !navigator.geolocation || !officeLocationReady()) return;
+  geofenceWatchId = navigator.geolocation.watchPosition(handleGeofencePosition, () => {}, { enableHighAccuracy: true, maximumAge: 10000, timeout: 15000 });
+}
+
+function handleGeofencePosition(position) {
+  if (geofenceCheckoutBusy || !session || session.role !== "employee" || !state.company.autoCheckout) return;
+  const record = currentOpenRecord();
+  if (!record) return;
+  const office = officePoint();
+  const current = { lat: position.coords.latitude, lng: position.coords.longitude };
+  const distance = distanceMeters(current, office);
+  if (distance <= office.radius) return;
+  geofenceCheckoutBusy = true;
+  record.checkOut = nowTime();
+  record.hours = duration(record.checkIn, record.checkOut);
+  record.status = record.status === "Late" || record.status === "Off-day Work" ? record.status : "Present";
+  record.remark = [record.remark, `Auto check-out: left office range (${distance}m from office).`].filter(Boolean).join(" | ");
+  record.verification = `${displayVerification(record.verification)} + GPS auto checkout`;
+  record.updatedBy = "System";
+  record.updatedAt = new Date().toLocaleString("en-GB", { hour12: false });
+  addAudit("Auto check-out", `${session.name} was checked out automatically after leaving office range (${distance}m).`);
+  saveState("Auto check-out completed.");
+  render();
+  toast("Auto checked out after leaving office range.");
+}
+
 function render() {
+  if (!session || session.role !== "employee" || !state.company.autoCheckout) stopGeofenceWatch();
   if (isQrDisplayMode()) {
     renderQrDisplay();
     return;
@@ -743,6 +811,7 @@ function render() {
   }
   if (!session) return renderLogin();
   renderApp();
+  startGeofenceWatch();
 }
 
 function renderLogin() {
@@ -815,7 +884,7 @@ async function login(event) {
     document.querySelector("#loginMessage").textContent = "Invalid login.";
     return;
   }
-  session = { role: loginRole, id: account.id, name: account.name, email: account.email, status: account.status || "Active" };
+  session = { role: loginRole, id: account.id, name: account.name, personName: account.personName || "", email: account.email, status: account.status || "Active" };
   view = "dashboard";
   render();
   processQr();
@@ -866,6 +935,7 @@ function renderApp() {
     render();
   }));
   document.querySelector("#logout").addEventListener("click", () => {
+    stopGeofenceWatch();
     session = null;
     render();
   });
@@ -963,7 +1033,7 @@ function renderAdminDashboard() {
       <div class="panel-head"><h2>Attendance Policy ${helpTip("These rules are enforced by the system for every employee device using this dataset.")}</h2></div>
       <div class="policy-grid">
         <div><span>GPS Verification</span><strong>Required</strong></div>
-        <div><span>Check-in Limit</span><strong>Once per day</strong></div>
+        <div><span>Auto Check-out</span><strong>${state.company.autoCheckout ? "Enabled" : "Disabled"}</strong></div>
         <div><span>Office Radius</span><strong>${state.company.officeRadius}m</strong></div>
         <div><span>Working Days</span><strong>${state.company.workingDays.join(", ")}</strong></div>
       </div>
@@ -974,14 +1044,21 @@ function renderAdminDashboard() {
 
 function renderRecords(admin) {
   const key = admin ? "attendanceAll" : "attendanceMine";
+  if (admin && (!selectedAttendanceEmployee || !employee(selectedAttendanceEmployee))) selectedAttendanceEmployee = state.employees[0]?.id || "";
+  if (!selectedAttendanceDate) selectedAttendanceDate = today();
   const records = (admin ? state.attendance : state.attendance.filter((item) => item.employeeId === session.id))
+    .filter((item) => !admin || item.employeeId === selectedAttendanceEmployee)
+    .filter((item) => !admin || item.date === selectedAttendanceDate)
     .filter((item) => includesSearch([employee(item.employeeId)?.name, item.employeeId, item.date, formatDate(item.date), item.status, item.verification], key));
   if (!selectedCalendarEmployee || !employee(selectedCalendarEmployee)) selectedCalendarEmployee = state.employees[0]?.id || "";
   const selectedEmp = employee(selectedCalendarEmployee);
+  const attendanceFilters = admin
+    ? `<section class="search-panel filter-panel">${searchBox(key, "Search selected day records")}<label class="search-field"><span>Employee</span><select class="select-control" id="attendanceEmployee">${state.employees.map((emp) => `<option value="${emp.id}" ${emp.id === selectedAttendanceEmployee ? "selected" : ""}>${escapeHtml(emp.name)} (${escapeHtml(emp.id)})</option>`).join("")}</select></label><label class="search-field"><span>Date</span><input id="attendanceDate" type="date" value="${selectedAttendanceDate}"></label></section>`
+    : `<section class="search-panel">${searchBox(key, "Search records")}</section>`;
   const calendar = admin
     ? `<section class="panel"><div class="panel-head"><h2>Employee Calendar</h2><div class="actions"><select class="select-control" id="calendarEmployee">${state.employees.map((emp) => `<option value="${emp.id}" ${emp.id === selectedCalendarEmployee ? "selected" : ""}>${escapeHtml(emp.name)}</option>`).join("")}</select><button class="btn" data-export-calendar="${selectedCalendarEmployee}">Export Report</button><button class="btn" data-export-timesheet="${selectedCalendarEmployee}">Export Timesheet</button><button class="btn" data-export-calendar="all">Export All</button><button class="btn" data-export-timesheet="all">All Timesheets</button></div></div>${selectedEmp ? calendarForEmployee(selectedEmp.id) : `<p class="empty">No employee selected.</p>`}</section>`
     : `<section class="panel"><div class="panel-head"><h2>Monthly Calendar</h2><div class="actions"><button class="btn" data-export-calendar="${session.id}">Export Report</button><button class="btn" data-export-timesheet="${session.id}">Export Timesheet</button></div></div>${calendarForEmployee(session.id)}</section>`;
-  return `<section class="search-panel">${searchBox(key, "Search records")}</section><section class="panel"><div class="panel-head"><h2>${admin ? `Attendance Records ${helpTip("Admin Update means the record was manually adjusted by admin. Employees can see the status and remark in their own dashboard and attendance history.")}` : "My Attendance Records"}</h2><div class="actions">${admin ? `<button class="btn primary" id="addManualAttendance">Add Manual Status</button>` : ""}<button class="btn" data-export-attendance="${admin ? "all" : "mine"}">Export CSV</button></div></div>${statusLegend()}${attendanceTable(records.slice().reverse(), admin)}</section>${calendar}`;
+  return `${attendanceFilters}<section class="panel"><div class="panel-head"><h2>${admin ? `Attendance Records ${helpTip("Choose an employee and date to manage that day. Admin can edit or delete every attendance record with a required remark for audit tracking.")}` : "My Attendance Records"}</h2><div class="actions">${admin ? `<button class="btn primary" id="addManualAttendance">Add Manual Status</button>` : ""}<button class="btn" data-export-attendance="${admin ? "all" : "mine"}">Export CSV</button></div></div>${statusLegend()}${attendanceTable(records.slice().reverse(), admin)}</section>${calendar}`;
 }
 
 function statusLegend() {
@@ -990,7 +1067,7 @@ function statusLegend() {
 
 function attendanceTable(records, admin) {
   if (!records.length) return `<p class="empty">No records yet.</p>`;
-  return `<div class="table-wrap record-scroll"><table class="responsive-table"><thead><tr>${admin ? "<th>Employee</th>" : ""}<th>Date</th><th>Session</th><th>In</th><th>Out</th><th>Hours</th><th>Status</th><th>Verify</th><th>Remark</th>${admin ? "<th>Updated By</th><th>Action</th>" : ""}</tr></thead><tbody>${records.map((r) => `<tr>${admin ? `<td data-label="Employee">${escapeHtml(employee(r.employeeId)?.name || r.employeeId)}</td>` : ""}<td data-label="Date">${formatDate(r.date)}</td><td data-label="Session">${escapeHtml(sessionLabel(r) || "-")}</td><td data-label="In">${r.checkIn || "-"}</td><td data-label="Out">${r.checkOut || "-"}</td><td data-label="Hours">${r.hours || "-"}</td><td data-label="Status"><span class="${badgeClass(r.status)}">${r.status}</span></td><td data-label="Verify">${escapeHtml(displayVerification(r.verification))}</td><td data-label="Remark">${escapeHtml(r.remark || "-")}</td>${admin ? `<td data-label="Updated By">${escapeHtml(r.updatedBy || "-")}</td><td data-label="Action"><button class="btn danger" data-delete-attendance="${r.id}">Delete</button></td>` : ""}</tr>`).join("")}</tbody></table></div>`;
+  return `<div class="table-wrap record-scroll"><table class="responsive-table"><thead><tr>${admin ? "<th>Employee</th>" : ""}<th>Date</th><th>Session</th><th>In</th><th>Out</th><th>Hours</th><th>Status</th><th>Verify</th><th>Remark</th>${admin ? "<th>Updated By</th><th>Action</th>" : ""}</tr></thead><tbody>${records.map((r) => `<tr>${admin ? `<td data-label="Employee">${escapeHtml(employee(r.employeeId)?.name || r.employeeId)}</td>` : ""}<td data-label="Date">${formatDate(r.date)}</td><td data-label="Session">${escapeHtml(sessionLabel(r) || "-")}</td><td data-label="In">${r.checkIn || "-"}</td><td data-label="Out">${r.checkOut || "-"}</td><td data-label="Hours">${r.hours || "-"}</td><td data-label="Status"><span class="${badgeClass(r.status)}">${r.status}</span></td><td data-label="Verify">${escapeHtml(displayVerification(r.verification))}</td><td data-label="Remark">${escapeHtml(r.remark || "-")}</td>${admin ? `<td data-label="Updated By">${escapeHtml(r.updatedBy || "-")}</td><td class="actions" data-label="Action"><button class="btn" data-edit-attendance="${r.id}">Edit</button><button class="btn danger" data-delete-attendance="${r.id}">Delete</button></td>` : ""}</tr>`).join("")}</tbody></table></div>`;
 }
 
 function calendarForEmployee(employeeId) {
@@ -1059,13 +1136,13 @@ function renderEmployees() {
 }
 
 function renderAdmins() {
-  const admins = state.admins.filter((admin) => includesSearch([admin.id, admin.name, admin.email], "admins"));
-  return `<section class="search-panel">${searchBox("admins", "Search admins")}</section><section class="panel"><div class="panel-head"><h2>Admins</h2><div class="actions"><button class="btn primary" id="addAdmin">Add Admin</button></div></div><div class="table-wrap record-scroll"><table class="responsive-table"><thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Password</th><th>Action</th></tr></thead><tbody>${admins.map((admin) => `<tr><td data-label="ID">${escapeHtml(admin.id)}</td><td data-label="Name">${escapeHtml(admin.name)}</td><td data-label="Email">${escapeHtml(admin.email)}</td><td data-label="Password"><code>${escapeHtml(admin.password)}</code></td><td class="actions" data-label="Action"><button class="btn" data-edit-admin="${admin.id}">Edit</button><button class="btn danger" data-delete-admin="${admin.id}" ${state.admins.length <= 1 ? "disabled" : ""}>Delete</button></td></tr>`).join("") || `<tr><td colspan="5" class="empty">No admins found.</td></tr>`}</tbody></table></div></section>`;
+  const admins = state.admins.filter((admin) => includesSearch([admin.id, admin.name, admin.personName, admin.email], "admins"));
+  return `<section class="search-panel">${searchBox("admins", "Search admins")}</section><section class="panel"><div class="panel-head"><h2>Admins ${helpTip("System-facing admin names are limited to Admin 1, Admin 2 and Admin 3. The person name is internal so the company knows who owns each admin code.")}</h2><div class="actions"><button class="btn primary" id="addAdmin" ${state.admins.length >= 3 ? "disabled" : ""}>Add Admin</button></div></div><div class="table-wrap record-scroll"><table class="responsive-table"><thead><tr><th>ID</th><th>Admin Code</th><th>Internal Person</th><th>Email</th><th>Password</th><th>Action</th></tr></thead><tbody>${admins.map((admin) => `<tr><td data-label="ID">${escapeHtml(admin.id)}</td><td data-label="Admin Code">${escapeHtml(admin.name)}</td><td data-label="Internal Person">${escapeHtml(admin.personName || "-")}</td><td data-label="Email">${escapeHtml(admin.email)}</td><td data-label="Password"><code>${escapeHtml(admin.password)}</code></td><td class="actions" data-label="Action"><button class="btn" data-edit-admin="${admin.id}">Edit</button><button class="btn danger" data-delete-admin="${admin.id}" ${state.admins.length <= 1 ? "disabled" : ""}>Delete</button></td></tr>`).join("") || `<tr><td colspan="6" class="empty">No admins found.</td></tr>`}</tbody></table></div></section>`;
 }
 
 function renderProfile() {
   const account = session.role === "admin" ? state.admins.find((admin) => admin.id === session.id) : employee(session.id);
-  return `<form class="panel form-grid profile-form" id="profileForm" autocomplete="off"><div class="panel-head wide"><h2>My Profile</h2></div><label class="field"><span>Name</span><input id="profileName" value="${escapeHtml(account.name)}" ${session.role === "employee" ? "readonly" : "required"}></label><label class="field"><span>Email</span><input id="profileEmail" type="email" value="${escapeHtml(account.email)}" required></label>${session.role === "employee" ? `<label class="field"><span>Phone</span><input id="profilePhone" value="${escapeHtml(account.phone || "")}"></label>` : ""}<label class="field"><span>Current Password</span><input id="currentPassword" type="password" value="" autocomplete="new-password" readonly onfocus="this.removeAttribute('readonly')"></label><label class="field"><span>New Password</span><input id="newPassword" type="password" value="" autocomplete="new-password" placeholder="Leave blank to keep"></label><label class="field"><span>Confirm New Password</span><input id="confirmPassword" type="password" value="" autocomplete="new-password" placeholder="Repeat new password"></label><div class="wide actions"><button class="btn primary compact-btn" type="submit">Save Profile</button></div></form>`;
+  return `<form class="panel form-grid profile-form" id="profileForm" autocomplete="off"><div class="panel-head wide"><h2>My Profile</h2></div><label class="field"><span>${session.role === "admin" ? "Admin Code" : "Name"}</span><input id="profileName" value="${escapeHtml(account.name)}" readonly></label>${session.role === "admin" ? `<label class="field"><span>Internal Person Name</span><input id="profilePersonName" value="${escapeHtml(account.personName || "")}" required></label>` : ""}<label class="field"><span>Email</span><input id="profileEmail" type="email" value="${escapeHtml(account.email)}" required></label>${session.role === "employee" ? `<label class="field"><span>Phone</span><input id="profilePhone" value="${escapeHtml(account.phone || "")}"></label>` : ""}<label class="field"><span>Current Password</span><input id="currentPassword" type="password" value="" autocomplete="new-password" readonly onfocus="this.removeAttribute('readonly')"></label><label class="field"><span>New Password</span><input id="newPassword" type="password" value="" autocomplete="new-password" placeholder="Leave blank to keep"></label><label class="field"><span>Confirm New Password</span><input id="confirmPassword" type="password" value="" autocomplete="new-password" placeholder="Repeat new password"></label><div class="wide actions"><button class="btn primary compact-btn" type="submit">Save Profile</button></div></form>`;
 }
 
 function renderSettings() {
@@ -1095,6 +1172,7 @@ function renderSettings() {
       <label class="field"><span>Office Latitude</span><input id="officeLatitude" type="number" step="0.000001" value="${state.company.officeLatitude}" required></label>
       <label class="field"><span>Office Longitude</span><input id="officeLongitude" type="number" step="0.000001" value="${state.company.officeLongitude}" required></label>
       <label class="field"><span class="label-row">Allowed Radius (m) ${helpTip("Employees must be inside this GPS radius to check in by QR or manual code. Use a larger radius only if the office GPS is unstable.")}</span><input id="officeRadius" type="number" min="20" max="5000" step="10" value="${state.company.officeRadius}" required></label>
+      <label class="field check-line wide"><input id="autoCheckout" type="checkbox" ${state.company.autoCheckout ? "checked" : ""}><span>Auto check-out when employee leaves GPS radius ${helpTip("Works while the employee website is open and location permission remains allowed. Browsers cannot reliably track location after the tab/app is fully closed.")}</span></label>
       <div class="field wide">
         <span>Working Days</span>
         <div class="day-grid">
@@ -1134,6 +1212,7 @@ function bindEvents() {
   document.querySelectorAll("[data-edit]").forEach((button) => button.addEventListener("click", () => openEmployeeModal(button.dataset.edit)));
   document.querySelectorAll("[data-edit-admin]").forEach((button) => button.addEventListener("click", () => openAdminModal(button.dataset.editAdmin)));
   document.querySelectorAll("[data-delete-admin]").forEach((button) => button.addEventListener("click", () => deleteAdmin(button.dataset.deleteAdmin)));
+  document.querySelectorAll("[data-edit-attendance]").forEach((button) => button.addEventListener("click", () => openAttendanceEditModal(button.dataset.editAttendance)));
   document.querySelectorAll("[data-approve]").forEach((button) => button.addEventListener("click", () => updateLeave(button.dataset.approve, "Approved")));
   document.querySelectorAll("[data-reject]").forEach((button) => button.addEventListener("click", () => updateLeave(button.dataset.reject, "Rejected")));
   document.querySelectorAll("[data-delete-attendance]").forEach((button) => button.addEventListener("click", () => deleteAttendance(button.dataset.deleteAttendance)));
@@ -1149,6 +1228,14 @@ function bindEvents() {
   }));
   document.querySelector("#calendarEmployee")?.addEventListener("change", (event) => {
     selectedCalendarEmployee = event.target.value;
+    render();
+  });
+  document.querySelector("#attendanceEmployee")?.addEventListener("change", (event) => {
+    selectedAttendanceEmployee = event.target.value;
+    render();
+  });
+  document.querySelector("#attendanceDate")?.addEventListener("change", (event) => {
+    selectedAttendanceDate = event.target.value || today();
     render();
   });
 }
@@ -1325,6 +1412,43 @@ function deleteAttendance(id) {
   });
 }
 
+function openAttendanceEditModal(id) {
+  const record = state.attendance.find((item) => item.id === id);
+  if (!record) return toast("Attendance record not found.");
+  const emp = employee(record.employeeId);
+  const modal = document.querySelector("#modal");
+  modal.innerHTML = `<form class="modal" id="editAttendanceForm"><h2>Edit Attendance Record</h2><p class="helper">Every admin edit requires a remark and is visible in audit log.</p><div class="record-summary"><strong>${escapeHtml(emp?.name || record.employeeId)}</strong><span>${formatDate(record.date)} | ${escapeHtml(sessionLabel(record) || "Record")}</span></div><label class="field"><span>Date</span><input id="editAttendanceDate" type="date" value="${record.date}" required></label><label class="field"><span>Check In</span><input id="editAttendanceIn" type="time" value="${record.checkIn || ""}"></label><label class="field"><span>Check Out</span><input id="editAttendanceOut" type="time" value="${record.checkOut || ""}"></label><label class="field"><span>Status</span><select id="editAttendanceStatus">${["Present", "Late", "Checked In", "Absent", "Public Holiday", "Off-day Work"].map((status) => `<option ${record.status === status ? "selected" : ""}>${status}</option>`).join("")}</select></label><label class="field"><span>Session Label</span><input id="editAttendanceSession" value="${escapeHtml(sessionLabel(record) || "")}" placeholder="Session 1"></label><label class="field wide"><span>Remark / Proof</span><textarea id="editAttendanceRemark" required placeholder="Reason for changing this record">${escapeHtml(record.remark || "")}</textarea></label><div class="modal-actions"><button class="btn primary" type="submit">Save Record</button><button class="btn" type="button" id="closeModal">Cancel</button></div></form>`;
+  modal.classList.add("show");
+  document.querySelector("#closeModal").addEventListener("click", closeModal);
+  document.querySelector("#editAttendanceForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const nextDate = document.querySelector("#editAttendanceDate").value;
+    const checkIn = document.querySelector("#editAttendanceIn").value;
+    const checkOut = document.querySelector("#editAttendanceOut").value;
+    const status = document.querySelector("#editAttendanceStatus").value;
+    const remark = document.querySelector("#editAttendanceRemark").value.trim();
+    if (!remark) return toast("Remark is required.");
+    if (checkOut && !checkIn) return toast("Enter check-in time before check-out time.");
+    if (checkIn && checkOut && checkOut < checkIn) return toast("Check-out time must be after check-in time.");
+    const before = `Date ${record.date}, In ${record.checkIn || "-"}, Out ${record.checkOut || "-"}, Status ${record.status}`;
+    record.date = nextDate;
+    record.checkIn = checkIn;
+    record.checkOut = checkOut;
+    record.hours = checkIn && checkOut ? duration(checkIn, checkOut) : "";
+    record.status = status;
+    record.sessionLabel = document.querySelector("#editAttendanceSession").value.trim();
+    record.verification = "Admin manual update";
+    record.remark = remark;
+    record.updatedBy = session.name;
+    record.updatedAt = new Date().toLocaleString("en-GB", { hour12: false });
+    addAudit("Attendance edited", `${session.name} edited attendance for ${emp?.name || record.employeeId}. Before: ${before}. After: Date ${record.date}, In ${record.checkIn || "-"}, Out ${record.checkOut || "-"}, Status ${record.status}. Remark: ${remark}.`);
+    saveState("Attendance record updated.");
+    closeModal();
+    render();
+    toast("Attendance record saved.");
+  });
+}
+
 function saveProfile(event) {
   event.preventDefault();
   if (session.role === "employee" && !isActiveEmployee()) return toast("Inactive account cannot edit profile.");
@@ -1345,10 +1469,11 @@ function saveProfile(event) {
     if (nextPassword.length < 8) return toast("Password must be at least 8 characters.");
     account.password = nextPassword;
   }
-  if (session.role === "admin") account.name = document.querySelector("#profileName").value.trim();
+  if (session.role === "admin") account.personName = document.querySelector("#profilePersonName").value.trim();
   account.email = email;
   if (session.role === "employee") account.phone = document.querySelector("#profilePhone").value.trim();
   session.name = account.name;
+  session.personName = account.personName || "";
   session.email = email;
   addAudit("Profile updated", `${account.name} updated profile.`);
   saveState("Profile updated.");
@@ -1366,6 +1491,7 @@ function saveSettings(event) {
   state.company.officeLatitude = Number(document.querySelector("#officeLatitude").value);
   state.company.officeLongitude = Number(document.querySelector("#officeLongitude").value);
   state.company.officeRadius = Number(document.querySelector("#officeRadius").value);
+  state.company.autoCheckout = document.querySelector("#autoCheckout").checked;
   if (!officeLocationReady()) return toast("Enter a valid office latitude, longitude, and radius.");
   state.company.workingDays = Array.from(document.querySelectorAll("input[name='workingDay']:checked")).map((input) => input.value);
   if (!state.company.workingDays.length) return toast("Select at least one working day.");
@@ -1598,9 +1724,11 @@ function openEmployeeModal(id) {
 
 function openAdminModal(id) {
   const existing = state.admins.find((admin) => admin.id === id);
-  const admin = existing || { id: `ADM${String(state.admins.length + 1).padStart(3, "0")}`, name: "", email: "", password: "admin12345" };
+  if (!existing && state.admins.length >= 3) return toast("Maximum 3 admin accounts only.");
+  const availableCodes = ["Admin 1", "Admin 2", "Admin 3"].filter((code) => existing?.name === code || !state.admins.some((admin) => admin.name === code));
+  const admin = existing || { id: nextAdminId(), name: availableCodes[0] || "Admin 1", personName: "", email: "", password: "admin12345" };
   const modal = document.querySelector("#modal");
-  modal.innerHTML = `<form class="modal" id="adminForm"><h2>${existing ? "Edit" : "Add"} Admin</h2><label class="field"><span>ID</span><input id="adminId" value="${escapeHtml(admin.id)}" ${existing ? "readonly" : ""} required></label><label class="field"><span>Name</span><input id="adminName" value="${escapeHtml(admin.name)}" required></label><label class="field"><span>Email</span><input id="adminEmail" type="email" value="${escapeHtml(admin.email)}" required></label><label class="field"><span>Password</span><input id="adminPassword" value="${escapeHtml(admin.password)}" required></label><div class="modal-actions"><button class="btn primary" type="submit">Save Admin</button><button class="btn" type="button" id="closeModal">Cancel</button></div></form>`;
+  modal.innerHTML = `<form class="modal" id="adminForm"><h2>${existing ? "Edit" : "Add"} Admin</h2><label class="field"><span>ID</span><input id="adminId" value="${escapeHtml(admin.id)}" ${existing ? "readonly" : ""} required></label><label class="field"><span>Admin Code</span><select id="adminName">${availableCodes.map((code) => `<option ${admin.name === code ? "selected" : ""}>${code}</option>`).join("")}</select></label><label class="field"><span>Internal Person Name</span><input id="adminPersonName" value="${escapeHtml(admin.personName || "")}" required></label><label class="field"><span>Email</span><input id="adminEmail" type="email" value="${escapeHtml(admin.email)}" required></label><label class="field"><span>Password</span><input id="adminPassword" value="${escapeHtml(admin.password)}" required></label><div class="modal-actions"><button class="btn primary" type="submit">Save Admin</button><button class="btn" type="button" id="closeModal">Cancel</button></div></form>`;
   modal.classList.add("show");
   document.querySelector("#closeModal").addEventListener("click", closeModal);
   document.querySelector("#adminForm").addEventListener("submit", (event) => {
@@ -1608,13 +1736,16 @@ function openAdminModal(id) {
     const payload = {
       id: document.querySelector("#adminId").value.trim(),
       name: document.querySelector("#adminName").value.trim(),
+      personName: document.querySelector("#adminPersonName").value.trim(),
       email: document.querySelector("#adminEmail").value.trim(),
       password: document.querySelector("#adminPassword").value.trim()
     };
-    if (!payload.id || !payload.name || !payload.email || !payload.password) return toast("Fill in all admin fields.");
+    if (!payload.id || !payload.name || !payload.personName || !payload.email || !payload.password) return toast("Fill in all admin fields.");
     if (payload.password.length < 8) return toast("Admin password must be at least 8 characters.");
     const duplicateId = state.admins.some((item) => item.id === payload.id && item.id !== id);
     if (duplicateId) return toast("Admin ID already exists.");
+    const duplicateCode = state.admins.some((item) => item.name === payload.name && item.id !== id);
+    if (duplicateCode) return toast("Admin code already exists.");
     const duplicateAdminEmail = state.admins.some((item) => item.email.toLowerCase() === payload.email.toLowerCase() && !(existing && item.id === existing.id));
     const duplicateEmployeeEmail = state.employees.some((item) => item.email.toLowerCase() === payload.email.toLowerCase());
     const duplicateEmail = duplicateAdminEmail || duplicateEmployeeEmail;
