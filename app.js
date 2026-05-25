@@ -23,7 +23,9 @@ const seedState = {
   employees: [],
   attendance: [],
   leaves: [],
-  auditLogs: []
+  auditLogs: [],
+  deletedAttendanceIds: [],
+  deletedAdminIds: []
 };
 
 let state = loadLocalState();
@@ -111,7 +113,9 @@ function normalize(input) {
     employees: (input.employees || seedState.employees).map((emp) => ({ ...emp, employmentDate: emp.employmentDate || "" })),
     attendance: input.attendance || [],
     leaves: input.leaves || [],
-    auditLogs: input.auditLogs || []
+    auditLogs: input.auditLogs || [],
+    deletedAttendanceIds: input.deletedAttendanceIds || [],
+    deletedAdminIds: input.deletedAdminIds || []
   };
 }
 
@@ -141,8 +145,8 @@ async function loadServerState() {
   }
 }
 
-async function pushServerState() {
-  if (usingFirebase()) return pushFirebaseState();
+async function pushServerState(previousState = null) {
+  if (usingFirebase()) return pushFirebaseState(previousState);
   if (location.protocol === "file:") return;
   await fetch(apiUrl(), {
     method: "POST",
@@ -178,7 +182,12 @@ async function loadFirebaseState() {
   }
 }
 
-async function pushFirebaseState() {
+async function pushFirebaseState(previousState = null) {
+  const merged = await mergeWithRemoteState(state, previousState);
+  if (merged) {
+    state = merged;
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+  }
   const response = await fetch(firebaseStateUrl(), {
     method: "PUT",
     headers: { "Content-Type": "application/json" },
@@ -188,11 +197,70 @@ async function pushFirebaseState() {
   lastStateText = JSON.stringify(state);
 }
 
+async function mergeWithRemoteState(local, previousState = null) {
+  try {
+    const response = await fetch(firebaseStateUrl(), { cache: "no-store" });
+    if (!response.ok) return null;
+    const remoteRaw = await response.json();
+    if (!remoteRaw || remoteRaw.datasetPassword !== datasetPassword) return null;
+    const remote = normalize(remoteRaw);
+    const previous = previousState ? normalize(previousState) : normalize(seedState);
+    const deletedAttendanceIds = uniqueValues([...remote.deletedAttendanceIds, ...local.deletedAttendanceIds]);
+    const deletedAdminIds = uniqueValues([...remote.deletedAdminIds, ...local.deletedAdminIds]);
+    return normalize({
+      ...remote,
+      company: objectChanged(local.company, previous.company) ? local.company : remote.company,
+      datasetPassword: local.datasetPassword,
+      admins: mergeChangedById(remote.admins, local.admins, previous.admins).filter((admin) => !deletedAdminIds.includes(admin.id)),
+      employees: mergeChangedById(remote.employees, local.employees, previous.employees),
+      attendance: mergeChangedById(remote.attendance, local.attendance, previous.attendance).filter((record) => !deletedAttendanceIds.includes(record.id)),
+      leaves: mergeChangedById(remote.leaves, local.leaves, previous.leaves),
+      auditLogs: sortAuditLogs(mergeChangedById(remote.auditLogs, local.auditLogs, previous.auditLogs)).slice(0, 80),
+      deletedAttendanceIds,
+      deletedAdminIds
+    });
+  } catch {
+    return null;
+  }
+}
+
+function mergeChangedById(remoteItems = [], localItems = [], previousItems = []) {
+  const map = new Map(remoteItems.filter((item) => item && item.id).map((item) => [item.id, item]));
+  const previousMap = new Map(previousItems.filter((item) => item && item.id).map((item) => [item.id, item]));
+  localItems.forEach((item) => {
+    if (!item || !item.id) return;
+    const previous = previousMap.get(item.id);
+    if (!previous || objectChanged(item, previous)) map.set(item.id, item);
+  });
+  return Array.from(map.values());
+}
+
+function objectChanged(a, b) {
+  return JSON.stringify(a || null) !== JSON.stringify(b || null);
+}
+
+function uniqueValues(values) {
+  return Array.from(new Set(values.filter(Boolean)));
+}
+
+function sortAuditLogs(logs) {
+  return logs.slice().sort((a, b) => String(b.id || "").localeCompare(String(a.id || "")));
+}
+
 function saveState(message) {
+  const previousState = parseStateText(lastStateText);
   localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
-  lastStateText = JSON.stringify(state);
   if (channel) channel.postMessage({ source: TAB_ID, state, message });
-  pushServerState().catch(() => {});
+  pushServerState(previousState).catch(() => {});
+  lastStateText = JSON.stringify(state);
+}
+
+function parseStateText(text) {
+  try {
+    return text ? JSON.parse(text) : null;
+  } catch {
+    return null;
+  }
 }
 
 function startSync() {
@@ -1157,6 +1225,7 @@ function submitLeave(event) {
 function updateLeave(id, status) {
   const leave = state.leaves.find((item) => item.id === id);
   if (!leave) return;
+  if (leave.status !== "Pending") return toast("This request has already been reviewed.");
   leave.status = status;
   leave.reviewedBy = session.name;
   addAudit(`Request ${status}`, `${session.name} ${status.toLowerCase()} a work request.`);
@@ -1178,6 +1247,7 @@ function deleteAttendance(id) {
     const remark = document.querySelector("#deleteRemark").value.trim();
     if (!remark) return toast("Deletion remark is required.");
     state.attendance = state.attendance.filter((item) => item.id !== id);
+    state.deletedAttendanceIds = uniqueValues([...state.deletedAttendanceIds, id]);
     addAudit("Attendance deleted", `${session.name} deleted attendance record for ${emp?.name || record.employeeId} on ${formatDate(record.date)}. Reason: ${remark}. Deleted record: In ${record.checkIn || "-"}, Out ${record.checkOut || "-"}, Status ${record.status}.`);
     saveState("Attendance record deleted.");
     closeModal();
@@ -1332,6 +1402,7 @@ function saveManualAttendance(event) {
   const remark = document.querySelector("#manualRemark").value.trim();
   const applyAll = document.querySelector("#manualAllEmployees").checked;
   if (to < from) return toast("To Date must be after From Date.");
+  if (["Present", "Late", "Checked In"].includes(status) && !manualCheckIn) return toast("Check-in time is required for this status.");
   if (manualCheckOut && !manualCheckIn) return toast("Enter check-in time before check-out time.");
   if (manualCheckIn && manualCheckOut && manualCheckOut < manualCheckIn) return toast("Check-out time must be after check-in time.");
   if (!remark) return toast("Remark is required.");
@@ -1339,6 +1410,7 @@ function saveManualAttendance(event) {
   const dates = dateRange(from, to);
   let changed = 0;
   const clearTimes = ["Absent", "Public Holiday"].includes(status);
+  if (clearTimes && (manualCheckIn || manualCheckOut)) return toast("Absent and Public Holiday records should not include check-in/out time.");
   targets.forEach((emp) => {
     dates
       .filter((dateValue) => !emp.employmentDate || dateValue >= emp.employmentDate)
@@ -1391,6 +1463,7 @@ function openEmployeeModal(id) {
     if (previous && previous.status !== nextStatus && !statusRemark) return toast("Status change requires a remark/proof.");
     const payload = { id: document.querySelector("#empId").value.trim(), name: document.querySelector("#empName").value.trim(), email: document.querySelector("#empEmail").value.trim(), password: document.querySelector("#empPassword").value.trim() || "employee123", department: document.querySelector("#empDept").value.trim(), position: document.querySelector("#empPos").value.trim(), employmentDate: document.querySelector("#empEmploymentDate").value, phone: document.querySelector("#empPhone").value.trim(), status: nextStatus, statusRemark, statusUpdatedAt: previous && previous.status !== nextStatus ? new Date().toLocaleString("en-GB", { hour12: false }) : emp.statusUpdatedAt || "", statusUpdatedBy: previous && previous.status !== nextStatus ? session.name : emp.statusUpdatedBy || "" };
     if (!payload.id || !payload.name || !payload.email) return toast("Fill in employee ID, name, and email.");
+    if (payload.password.length < 8) return toast("Employee password must be at least 8 characters.");
     const duplicateEmployeeId = state.employees.some((item) => item.id === payload.id && item.id !== id);
     if (duplicateEmployeeId) return toast("Employee ID already exists.");
     const duplicateEmployeeEmail = state.employees.some((item) => item.email.toLowerCase() === payload.email.toLowerCase() && item.id !== id);
@@ -1423,9 +1496,12 @@ function openAdminModal(id) {
       password: document.querySelector("#adminPassword").value.trim()
     };
     if (!payload.id || !payload.name || !payload.email || !payload.password) return toast("Fill in all admin fields.");
+    if (payload.password.length < 8) return toast("Admin password must be at least 8 characters.");
     const duplicateId = state.admins.some((item) => item.id === payload.id && item.id !== id);
     if (duplicateId) return toast("Admin ID already exists.");
-    const duplicateEmail = [...state.admins, ...state.employees].some((item) => item.email.toLowerCase() === payload.email.toLowerCase() && !(existing && item.id === existing.id));
+    const duplicateAdminEmail = state.admins.some((item) => item.email.toLowerCase() === payload.email.toLowerCase() && !(existing && item.id === existing.id));
+    const duplicateEmployeeEmail = state.employees.some((item) => item.email.toLowerCase() === payload.email.toLowerCase());
+    const duplicateEmail = duplicateAdminEmail || duplicateEmployeeEmail;
     if (duplicateEmail) return toast("Email already used.");
     const index = state.admins.findIndex((item) => item.id === payload.id);
     if (index >= 0) state.admins[index] = payload;
@@ -1456,6 +1532,7 @@ function deleteAdmin(id) {
     const remark = document.querySelector("#deleteAdminRemark").value.trim();
     if (!remark) return toast("Deletion remark is required.");
     state.admins = state.admins.filter((item) => item.id !== id);
+    state.deletedAdminIds = uniqueValues([...state.deletedAdminIds, id]);
     addAudit("Admin deleted", `${session.name} deleted admin ${admin.email}. Reason: ${remark}.`);
     saveState("Admin account deleted.");
     closeModal();
