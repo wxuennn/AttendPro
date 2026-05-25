@@ -246,6 +246,15 @@ function duration(start, end) {
   return `${Math.floor(total / 60)}h ${total % 60}m`;
 }
 
+function parseDurationMinutes(value) {
+  const match = String(value || "").match(/(\d+)h\s+(\d+)m/);
+  return match ? Number(match[1]) * 60 + Number(match[2]) : 0;
+}
+
+function formatMinutes(total) {
+  return `${Math.floor(total / 60)}h ${total % 60}m`;
+}
+
 function distanceMeters(a, b) {
   const radius = 6371000;
   const toRad = (value) => value * Math.PI / 180;
@@ -681,7 +690,7 @@ function renderApp() {
   const isAdmin = session.role === "admin";
   const inactiveEmployee = session.role === "employee" && !isActiveEmployee();
   const nav = isAdmin
-    ? [["dashboard", "Dashboard"], ["employees", "Employees"], ["records", "Attendance"], ["leaves", "Work Requests"], ["settings", "Settings"], ["audit", "Audit Log"], ["profile", "My Profile"]]
+    ? [["dashboard", "Dashboard"], ["employees", "Employees"], ["admins", "Admins"], ["records", "Attendance"], ["leaves", "Work Requests"], ["settings", "Settings"], ["audit", "Audit Log"], ["profile", "My Profile"]]
     : inactiveEmployee
       ? [["dashboard", "Dashboard"], ["history", "Attendance"]]
       : [["dashboard", "Dashboard"], ["history", "Attendance"], ["leave", "Work Request"], ["profile", "My Profile"]];
@@ -719,6 +728,7 @@ function title() {
   return {
     dashboard: "Dashboard",
     employees: "Manage Employees",
+    admins: "Manage Admins",
     records: "Attendance Records",
     leaves: "Work Requests",
     settings: "Company Settings",
@@ -732,6 +742,7 @@ function title() {
 function renderView() {
   if (session.role === "admin") {
     if (view === "employees") return renderEmployees();
+    if (view === "admins") return renderAdmins();
     if (view === "records") return renderRecords(true);
     if (view === "leaves") return renderLeaveApproval();
     if (view === "settings") return renderSettings();
@@ -823,7 +834,17 @@ function calendarForEmployee(employeeId) {
         return `<div class="calendar-cell ${status.type}"><strong>${Number(dateValue.slice(-2))}</strong><span>${escapeHtml(status.label)}</span></div>`;
       }).join("")}
     </div>
+    ${calendarMonthSummary(employeeId, dates)}
   `;
+}
+
+function calendarMonthSummary(employeeId, dates = monthDates()) {
+  const records = state.attendance.filter((item) => item.employeeId === employeeId && dates.includes(item.date));
+  const totalMinutes = records.reduce((sum, record) => sum + parseDurationMinutes(record.hours), 0);
+  const workedDays = new Set(records.filter((record) => record.hours || ["Present", "Late", "Checked In", "Off-day Work"].includes(record.status)).map((record) => record.date)).size;
+  const absentDays = dates.filter((dateValue) => calendarStatus(employeeId, dateValue).type === "absent").length;
+  const lateDays = records.filter((record) => record.status === "Late").length;
+  return `<div class="calendar-summary"><div><span>Total Worked</span><strong>${formatMinutes(totalMinutes)}</strong></div><div><span>Worked Days</span><strong>${workedDays}</strong></div><div><span>Late</span><strong>${lateDays}</strong></div><div><span>Absent</span><strong>${absentDays}</strong></div></div>`;
 }
 
 function renderLeaveForm() {
@@ -863,6 +884,11 @@ function leaveTable(leaves, admin) {
 function renderEmployees() {
   const employees = state.employees.filter((emp) => includesSearch([emp.id, emp.name, emp.email, emp.department, emp.position, emp.employmentDate, emp.phone, emp.status, emp.statusRemark], "employees"));
   return `<section class="search-panel">${searchBox("employees", "Search employees")}</section><section class="panel"><div class="panel-head"><h2>Employees</h2><div class="actions"><button class="btn" data-export-employees>Export CSV</button><button class="btn primary" id="addEmployee">Add Employee</button></div></div><div class="table-wrap record-scroll"><table class="employees-table"><thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Password</th><th>Department</th><th>Position</th><th>Joined</th><th>Phone</th><th>Status</th><th>Remark</th><th>Action</th></tr></thead><tbody>${employees.map((emp) => `<tr><td>${emp.id}</td><td>${escapeHtml(emp.name)}</td><td>${escapeHtml(emp.email)}</td><td><code>${escapeHtml(emp.password)}</code></td><td>${escapeHtml(emp.department)}</td><td>${escapeHtml(emp.position)}</td><td>${emp.employmentDate ? formatDate(emp.employmentDate) : "-"}</td><td>${escapeHtml(emp.phone || "-")}</td><td>${emp.status}</td><td>${escapeHtml(emp.statusRemark || "-")}</td><td><button class="btn" data-edit="${emp.id}">Edit</button></td></tr>`).join("") || `<tr><td colspan="11" class="empty">No employees found.</td></tr>`}</tbody></table></div></section>`;
+}
+
+function renderAdmins() {
+  const admins = state.admins.filter((admin) => includesSearch([admin.id, admin.name, admin.email], "admins"));
+  return `<section class="search-panel">${searchBox("admins", "Search admins")}</section><section class="panel"><div class="panel-head"><h2>Admins</h2><div class="actions"><button class="btn primary" id="addAdmin">Add Admin</button></div></div><div class="table-wrap record-scroll"><table class="responsive-table"><thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Password</th><th>Action</th></tr></thead><tbody>${admins.map((admin) => `<tr><td data-label="ID">${escapeHtml(admin.id)}</td><td data-label="Name">${escapeHtml(admin.name)}</td><td data-label="Email">${escapeHtml(admin.email)}</td><td data-label="Password"><code>${escapeHtml(admin.password)}</code></td><td class="actions" data-label="Action"><button class="btn" data-edit-admin="${admin.id}">Edit</button><button class="btn danger" data-delete-admin="${admin.id}" ${state.admins.length <= 1 ? "disabled" : ""}>Delete</button></td></tr>`).join("") || `<tr><td colspan="5" class="empty">No admins found.</td></tr>`}</tbody></table></div></section>`;
 }
 
 function renderProfile() {
@@ -931,8 +957,11 @@ function bindEvents() {
   document.querySelector("#settingsForm")?.addEventListener("submit", saveSettings);
   document.querySelector("#useMyLocation")?.addEventListener("click", useMyLocationForOffice);
   document.querySelector("#addEmployee")?.addEventListener("click", () => openEmployeeModal());
+  document.querySelector("#addAdmin")?.addEventListener("click", () => openAdminModal());
   document.querySelector("#addManualAttendance")?.addEventListener("click", () => openManualAttendanceModal());
   document.querySelectorAll("[data-edit]").forEach((button) => button.addEventListener("click", () => openEmployeeModal(button.dataset.edit)));
+  document.querySelectorAll("[data-edit-admin]").forEach((button) => button.addEventListener("click", () => openAdminModal(button.dataset.editAdmin)));
+  document.querySelectorAll("[data-delete-admin]").forEach((button) => button.addEventListener("click", () => deleteAdmin(button.dataset.deleteAdmin)));
   document.querySelectorAll("[data-approve]").forEach((button) => button.addEventListener("click", () => updateLeave(button.dataset.approve, "Approved")));
   document.querySelectorAll("[data-reject]").forEach((button) => button.addEventListener("click", () => updateLeave(button.dataset.reject, "Rejected")));
   document.querySelectorAll("[data-delete-attendance]").forEach((button) => button.addEventListener("click", () => deleteAttendance(button.dataset.deleteAttendance)));
@@ -1235,6 +1264,9 @@ function exportCalendar(target) {
     .calendar-cell strong{display:block;font-size:13px}.calendar-cell span{font-size:11px;color:#65747c}
     .present{background:#e8f8ef;border-color:#b7e8ca}.late{background:#fff5df;border-color:#f1d38c}.absent,.rejected{background:#fff0f0;border-color:#f3baba}
     .approved,.wfh{background:#eaf2ff;border-color:#bad0ff}.holiday{background:#f2edff;border-color:#cbbef5}.pending{background:#fff9e8;border-color:#ecd79d}.off,.empty,.empty-cell{background:#f4f7f8}
+    .calendar-summary{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin:0 0 16px}
+    .calendar-summary div{border:1px solid #d9e4e8;border-radius:8px;background:#f7fafb;padding:10px}
+    .calendar-summary span{display:block;color:#65747c;font-size:11px;font-weight:700;text-transform:uppercase}.calendar-summary strong{display:block;margin-top:4px;font-size:16px}
     table{width:100%;border-collapse:collapse;margin-top:8px}th,td{border-bottom:1px solid #d9e4e8;text-align:left;padding:9px;font-size:13px}th{color:#65747c;text-transform:uppercase;font-size:11px}
   </style></head><body><header><h1>${escapeHtml(title)}</h1><div class="meta">Company: ${escapeHtml(companyReportName())} | Dataset: ${escapeHtml(companyKey)} | Generated: ${new Date().toLocaleString("en-GB")}</div></header>${sections}</body></html>`;
   const fileBase = target === "all" ? `${companyReportName()}-calendar-report-${monthLabel()}` : `${companyReportName()}-${employees[0].name}-calendar-report-${monthLabel()}`;
@@ -1326,6 +1358,63 @@ function openEmployeeModal(id) {
     closeModal();
     render();
     toast("Employee saved.");
+  });
+}
+
+function openAdminModal(id) {
+  const existing = state.admins.find((admin) => admin.id === id);
+  const admin = existing || { id: `ADM${String(state.admins.length + 1).padStart(3, "0")}`, name: "", email: "", password: "admin12345" };
+  const modal = document.querySelector("#modal");
+  modal.innerHTML = `<form class="modal" id="adminForm"><h2>${existing ? "Edit" : "Add"} Admin</h2><label class="field"><span>ID</span><input id="adminId" value="${escapeHtml(admin.id)}" ${existing ? "readonly" : ""} required></label><label class="field"><span>Name</span><input id="adminName" value="${escapeHtml(admin.name)}" required></label><label class="field"><span>Email</span><input id="adminEmail" type="email" value="${escapeHtml(admin.email)}" required></label><label class="field"><span>Password</span><input id="adminPassword" value="${escapeHtml(admin.password)}" required></label><div class="modal-actions"><button class="btn primary" type="submit">Save Admin</button><button class="btn" type="button" id="closeModal">Cancel</button></div></form>`;
+  modal.classList.add("show");
+  document.querySelector("#closeModal").addEventListener("click", closeModal);
+  document.querySelector("#adminForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const payload = {
+      id: document.querySelector("#adminId").value.trim(),
+      name: document.querySelector("#adminName").value.trim(),
+      email: document.querySelector("#adminEmail").value.trim(),
+      password: document.querySelector("#adminPassword").value.trim()
+    };
+    if (!payload.id || !payload.name || !payload.email || !payload.password) return toast("Fill in all admin fields.");
+    const duplicateId = state.admins.some((item) => item.id === payload.id && item.id !== id);
+    if (duplicateId) return toast("Admin ID already exists.");
+    const duplicateEmail = [...state.admins, ...state.employees].some((item) => item.email.toLowerCase() === payload.email.toLowerCase() && !(existing && item.id === existing.id));
+    if (duplicateEmail) return toast("Email already used.");
+    const index = state.admins.findIndex((item) => item.id === payload.id);
+    if (index >= 0) state.admins[index] = payload;
+    else state.admins.push(payload);
+    if (session.id === payload.id) {
+      session.name = payload.name;
+      session.email = payload.email;
+    }
+    addAudit("Admin saved", `${session.name} saved admin account ${payload.email}.`);
+    saveState("Admin account updated.");
+    closeModal();
+    render();
+    toast("Admin saved.");
+  });
+}
+
+function deleteAdmin(id) {
+  const admin = state.admins.find((item) => item.id === id);
+  if (!admin) return toast("Admin not found.");
+  if (state.admins.length <= 1) return toast("At least one admin is required.");
+  if (admin.id === session.id) return toast("You cannot delete your own admin account while logged in.");
+  const modal = document.querySelector("#modal");
+  modal.innerHTML = `<form class="modal" id="deleteAdminForm"><h2>Delete Admin</h2><p class="helper">This removes admin login access and will be saved in the audit log.</p><div class="record-summary"><strong>${escapeHtml(admin.name)}</strong><span>${escapeHtml(admin.email)} | ${escapeHtml(admin.id)}</span></div><label class="field"><span>Deletion Remark / Proof</span><textarea id="deleteAdminRemark" required placeholder="Example: Duplicate admin created by mistake"></textarea></label><div class="modal-actions"><button class="btn danger" type="submit">Delete Admin</button><button class="btn" type="button" id="closeModal">Cancel</button></div></form>`;
+  modal.classList.add("show");
+  document.querySelector("#closeModal").addEventListener("click", closeModal);
+  document.querySelector("#deleteAdminForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const remark = document.querySelector("#deleteAdminRemark").value.trim();
+    if (!remark) return toast("Deletion remark is required.");
+    state.admins = state.admins.filter((item) => item.id !== id);
+    addAudit("Admin deleted", `${session.name} deleted admin ${admin.email}. Reason: ${remark}.`);
+    saveState("Admin account deleted.");
+    closeModal();
+    render();
+    toast("Admin deleted.");
   });
 }
 

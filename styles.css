@@ -413,6 +413,30 @@ main { min-width: 0; }
 .calendar-cell.pending { background: #fff9e8; border-color: #ecd79d; }
 .calendar-cell.off, .calendar-cell.empty, .calendar-cell.empty-cell { background: #f4f7f8; color: var(--muted); }
 .calendar-cell.active, .calendar-cell.offwork { background: #eef7f6; border-color: #b9ded9; }
+.calendar-summary {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+.calendar-summary div {
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: #f7fafb;
+}
+.calendar-summary span {
+  display: block;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+.calendar-summary strong {
+  display: block;
+  margin-top: 4px;
+  font-size: 1.08rem;
+}
 
 .table-wrap { width: 100%; max-width: 100%; min-width: 0; overflow-x: auto; }
 .record-scroll { max-height: 470px; overflow: auto; -webkit-overflow-scrolling: touch; }
@@ -542,6 +566,9 @@ th { color: var(--muted); text-transform: uppercase; font-size: 0.76rem; letter-
     -webkit-line-clamp: 2;
     font-size: 0.54rem;
     line-height: 1.15;
+  }
+  .calendar-summary {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
   .responsive-table {
     display: block;
