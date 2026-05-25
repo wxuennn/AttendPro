@@ -541,7 +541,7 @@ function displayVerification(value) {
 }
 
 function helpTip(text) {
-  return `<span class="help-tip" tabindex="0" aria-label="Help">?<span class="help-text">${escapeHtml(text)}</span></span>`;
+  return `<span class="help-tip" tabindex="0" role="button" aria-label="${escapeHtml(text)}" data-help="${escapeHtml(text)}">?</span>`;
 }
 
 function badgeClass(status) {
@@ -1166,7 +1166,7 @@ function renderSettings() {
       <label class="field"><span>Late After</span><input id="lateAfter" type="time" value="${state.company.lateAfter}" required></label>
       <label class="field"><span class="label-row">QR / Code Refresh ${helpTip("How often the QR and manual code rotate. Shorter timing is safer because leaked codes expire faster.")}</span><select id="codeInterval"><option value="30" ${state.company.codeInterval === 30 ? "selected" : ""}>30 seconds</option><option value="60" ${state.company.codeInterval === 60 ? "selected" : ""}>60 seconds</option></select></label>
       <label class="field">
-        <span class="label-row">Code Secret <span class="help-tip" tabindex="0" aria-label="Code Secret explanation">?<span class="help-text">Private seed used to generate rotating QR and manual codes. Change it if a code is leaked.</span></span></span>
+        <span class="label-row">Code Secret ${helpTip("Private seed used to generate rotating QR and manual codes. Change it if a code is leaked.")}</span>
         <input id="codeSecret" value="${escapeHtml(state.company.codeSecret)}" required>
       </label>
       <label class="field"><span>Office Latitude</span><input id="officeLatitude" type="number" step="0.000001" value="${state.company.officeLatitude}" required></label>
@@ -1249,6 +1249,73 @@ function bindPasswordToggles() {
       button.classList.toggle("active", input.type === "text");
     });
   });
+}
+
+function ensureHelpBubble() {
+  let bubble = document.querySelector("#helpBubble");
+  if (!bubble) {
+    bubble = document.createElement("div");
+    bubble.id = "helpBubble";
+    bubble.className = "help-bubble";
+    document.body.appendChild(bubble);
+  }
+  return bubble;
+}
+
+function showHelpBubble(target) {
+  const text = target?.dataset?.help;
+  if (!text) return;
+  const bubble = ensureHelpBubble();
+  bubble.textContent = text;
+  bubble.classList.add("show");
+  const rect = target.getBoundingClientRect();
+  const width = Math.min(320, window.innerWidth - 24);
+  bubble.style.maxWidth = `${width}px`;
+  bubble.style.left = "12px";
+  bubble.style.top = "12px";
+  const bubbleRect = bubble.getBoundingClientRect();
+  let left = rect.left + rect.width / 2 - bubbleRect.width / 2;
+  left = Math.max(12, Math.min(left, window.innerWidth - bubbleRect.width - 12));
+  let top = rect.top - bubbleRect.height - 10;
+  if (top < 12) top = rect.bottom + 10;
+  top = Math.max(12, Math.min(top, window.innerHeight - bubbleRect.height - 12));
+  bubble.style.left = `${left}px`;
+  bubble.style.top = `${top}px`;
+}
+
+function hideHelpBubble() {
+  document.querySelector("#helpBubble")?.classList.remove("show");
+}
+
+function bindGlobalHelpTips() {
+  document.addEventListener("mouseover", (event) => {
+    const target = event.target.closest?.("[data-help]");
+    if (target) showHelpBubble(target);
+  });
+  document.addEventListener("focusin", (event) => {
+    const target = event.target.closest?.("[data-help]");
+    if (target) showHelpBubble(target);
+  });
+  document.addEventListener("mouseout", (event) => {
+    if (event.target.closest?.("[data-help]")) hideHelpBubble();
+  });
+  document.addEventListener("focusout", (event) => {
+    if (event.target.closest?.("[data-help]")) hideHelpBubble();
+  });
+  document.addEventListener("click", (event) => {
+    const target = event.target.closest?.("[data-help]");
+    if (target) {
+      event.preventDefault();
+      showHelpBubble(target);
+    } else {
+      hideHelpBubble();
+    }
+  });
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") hideHelpBubble();
+  });
+  window.addEventListener("scroll", hideHelpBubble, true);
+  window.addEventListener("resize", hideHelpBubble);
 }
 
 function renderQrDisplay() {
@@ -1804,6 +1871,7 @@ setInterval(() => {
 }, 1000);
 
 startSync();
+bindGlobalHelpTips();
 if ("serviceWorker" in navigator) {
   navigator.serviceWorker.getRegistrations()
     .then((registrations) => Promise.all(registrations.map((registration) => registration.unregister())))

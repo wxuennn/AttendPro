@@ -153,10 +153,10 @@ main { min-width: 0; }
   gap: 6px;
 }
 .help-tip {
-  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex: 0 0 auto;
   width: 18px;
   height: 18px;
   border: 1px solid var(--line);
@@ -168,12 +168,12 @@ main { min-width: 0; }
   cursor: help;
   vertical-align: middle;
 }
-.help-text {
-  position: absolute;
-  left: 50%;
-  bottom: calc(100% + 10px);
-  z-index: 20;
-  width: min(280px, 72vw);
+.help-bubble {
+  position: fixed;
+  z-index: 1000;
+  display: none;
+  width: max-content;
+  max-width: min(320px, calc(100vw - 24px));
   padding: 10px 12px;
   border: 1px solid var(--line);
   border-radius: var(--radius);
@@ -183,15 +183,12 @@ main { min-width: 0; }
   font-size: 0.78rem !important;
   font-weight: 650 !important;
   line-height: 1.4;
-  opacity: 0;
   pointer-events: none;
-  transform: translate(-50%, 4px);
-  transition: opacity 0.16s ease, transform 0.16s ease;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
-.help-tip:hover .help-text,
-.help-tip:focus-visible .help-text {
-  opacity: 1;
-  transform: translate(-50%, 0);
+.help-bubble.show {
+  display: block;
 }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .wide { grid-column: 1 / -1; }
