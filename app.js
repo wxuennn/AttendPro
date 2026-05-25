@@ -488,6 +488,10 @@ function displayVerification(value) {
   return text.replace(/\s*\+\s*GPS verified.*$/i, "");
 }
 
+function helpTip(text) {
+  return `<span class="help-tip" tabindex="0" aria-label="Help">?<span class="help-text">${escapeHtml(text)}</span></span>`;
+}
+
 function badgeClass(status) {
   return `badge status-${safeName(status)}`;
 }
@@ -867,6 +871,7 @@ function renderEmployeeDashboard() {
   const todayRecords = todaysRecords();
   const latestToday = todayRecords.at(-1);
   const inactive = emp.status === "Inactive";
+  const adminUpdates = adminManualUpdates(session.id).slice(0, 5);
   return `
     <div class="metrics">
       <div class="metric"><span>Department</span><strong>${escapeHtml(emp.department)}</strong></div>
@@ -888,9 +893,17 @@ function renderEmployeeDashboard() {
         <button class="btn" id="checkOut" ${!open || inactive || attendanceBusy ? "disabled" : ""}>Check Out</button>
       </div>
     </section>
+    ${adminUpdates.length ? `<section class="panel notice-panel"><div class="panel-head"><h2>Admin Updates ${helpTip("These are attendance records adjusted by admin, such as absence correction, public holiday, approved correction, or missed checkout fix. Check the remark for the reason/proof.")}</h2></div><div class="update-list">${adminUpdates.map((record) => `<div class="update-item"><div><strong>${formatDate(record.date)}</strong><span>${escapeHtml(record.remark || "No remark provided.")}</span></div><span class="${badgeClass(record.status)}">${escapeHtml(record.status)}</span></div>`).join("")}</div></section>` : ""}
     <section class="panel"><div class="panel-head"><h2>Monthly Calendar</h2><button class="btn" data-export-calendar="${session.id}">Export Report</button></div>${calendarForEmployee(session.id)}</section>
     <section class="panel"><div class="panel-head"><h2>Recent Attendance</h2><button class="btn" data-export-attendance="mine">Export CSV</button></div>${attendanceTable(state.attendance.filter((r) => r.employeeId === session.id).slice(-5).reverse(), false)}</section>
   `;
+}
+
+function adminManualUpdates(employeeId) {
+  return state.attendance
+    .filter((record) => record.employeeId === employeeId && displayVerification(record.verification) === "Admin Update")
+    .slice()
+    .sort((a, b) => `${b.date}${b.id}`.localeCompare(`${a.date}${a.id}`));
 }
 
 function renderAdminDashboard() {
@@ -902,8 +915,17 @@ function renderAdminDashboard() {
       <div class="metric"><span>Pending Requests</span><strong>${pending}</strong></div>
     </div>
     <section class="panel">
-      <div class="panel-head"><div><h2>QR Check-In Display</h2><p>Open this on a lobby monitor. QR refreshes every ${state.company.codeInterval}s.</p></div><button class="btn primary" id="openQr">Open QR Display</button></div>
+      <div class="panel-head"><div><h2>QR Check-In Display ${helpTip("Open this on a lobby monitor only. Employees scan the rotating QR to check in. The QR changes with the same timer as the manual code.")}</h2><p>Open this on a lobby monitor. QR refreshes every ${state.company.codeInterval}s.</p></div><button class="btn primary" id="openQr">Open QR Display</button></div>
       <div class="metrics compact"><div class="metric"><span>Manual Code</span><strong id="liveCode">${currentCode()}</strong></div><div class="metric"><span>Refresh In</span><strong id="countdown">${secondsLeft()}s</strong></div><div class="metric"><span>Late After</span><strong>${state.company.lateAfter}</strong></div></div>
+    </section>
+    <section class="panel policy-panel">
+      <div class="panel-head"><h2>Attendance Policy ${helpTip("These rules are enforced by the system for every employee device using this dataset.")}</h2></div>
+      <div class="policy-grid">
+        <div><span>GPS Verification</span><strong>Required</strong></div>
+        <div><span>Check-in Limit</span><strong>Once per day</strong></div>
+        <div><span>Office Radius</span><strong>${state.company.officeRadius}m</strong></div>
+        <div><span>Working Days</span><strong>${state.company.workingDays.join(", ")}</strong></div>
+      </div>
     </section>
     <section class="panel"><div class="panel-head"><h2>Latest Attendance</h2><button class="btn" data-export-attendance="all">Export CSV</button></div>${attendanceTable(state.attendance.slice(-6).reverse(), true)}</section>
   `;
@@ -918,12 +940,16 @@ function renderRecords(admin) {
   const calendar = admin
     ? `<section class="panel"><div class="panel-head"><h2>Employee Calendar</h2><div class="actions"><select class="select-control" id="calendarEmployee">${state.employees.map((emp) => `<option value="${emp.id}" ${emp.id === selectedCalendarEmployee ? "selected" : ""}>${escapeHtml(emp.name)}</option>`).join("")}</select><button class="btn" data-export-calendar="${selectedCalendarEmployee}">Export Report</button><button class="btn" data-export-calendar="all">Export All</button></div></div>${selectedEmp ? calendarForEmployee(selectedEmp.id) : `<p class="empty">No employee selected.</p>`}</section>`
     : `<section class="panel"><div class="panel-head"><h2>Monthly Calendar</h2><button class="btn" data-export-calendar="${session.id}">Export Report</button></div>${calendarForEmployee(session.id)}</section>`;
-  return `<section class="search-panel">${searchBox(key, "Search records")}</section><section class="panel"><div class="panel-head"><h2>${admin ? "Attendance Records" : "My Attendance Records"}</h2><div class="actions">${admin ? `<button class="btn primary" id="addManualAttendance">Add Manual Status</button>` : ""}<button class="btn" data-export-attendance="${admin ? "all" : "mine"}">Export CSV</button></div></div>${attendanceTable(records.slice().reverse(), admin)}</section>${calendar}`;
+  return `<section class="search-panel">${searchBox(key, "Search records")}</section><section class="panel"><div class="panel-head"><h2>${admin ? `Attendance Records ${helpTip("Admin Update means the record was manually adjusted by admin. Employees can see the status and remark in their own dashboard and attendance history.")}` : "My Attendance Records"}</h2><div class="actions">${admin ? `<button class="btn primary" id="addManualAttendance">Add Manual Status</button>` : ""}<button class="btn" data-export-attendance="${admin ? "all" : "mine"}">Export CSV</button></div></div>${statusLegend()}${attendanceTable(records.slice().reverse(), admin)}</section>${calendar}`;
+}
+
+function statusLegend() {
+  return `<div class="status-legend"><span class="badge status-present">Present</span><span class="badge status-late">Late</span><span class="badge status-absent">Absent</span><span class="badge status-public-holiday">Public Holiday</span><span class="badge status-pending">Pending</span><span class="badge status-approved">Approved</span></div>`;
 }
 
 function attendanceTable(records, admin) {
   if (!records.length) return `<p class="empty">No records yet.</p>`;
-  return `<div class="table-wrap record-scroll"><table class="responsive-table"><thead><tr>${admin ? "<th>Employee</th>" : ""}<th>Date</th><th>In</th><th>Out</th><th>Hours</th><th>Status</th><th>Verify</th><th>Remark</th>${admin ? "<th>Action</th>" : ""}</tr></thead><tbody>${records.map((r) => `<tr>${admin ? `<td data-label="Employee">${escapeHtml(employee(r.employeeId)?.name || r.employeeId)}</td>` : ""}<td data-label="Date">${formatDate(r.date)}</td><td data-label="In">${r.checkIn || "-"}</td><td data-label="Out">${r.checkOut || "-"}</td><td data-label="Hours">${r.hours || "-"}</td><td data-label="Status"><span class="${badgeClass(r.status)}">${r.status}</span></td><td data-label="Verify">${escapeHtml(displayVerification(r.verification))}</td><td data-label="Remark">${escapeHtml(r.remark || "-")}</td>${admin ? `<td data-label="Action"><button class="btn danger" data-delete-attendance="${r.id}">Delete</button></td>` : ""}</tr>`).join("")}</tbody></table></div>`;
+  return `<div class="table-wrap record-scroll"><table class="responsive-table"><thead><tr>${admin ? "<th>Employee</th>" : ""}<th>Date</th><th>In</th><th>Out</th><th>Hours</th><th>Status</th><th>Verify</th><th>Remark</th>${admin ? "<th>Updated By</th><th>Action</th>" : ""}</tr></thead><tbody>${records.map((r) => `<tr>${admin ? `<td data-label="Employee">${escapeHtml(employee(r.employeeId)?.name || r.employeeId)}</td>` : ""}<td data-label="Date">${formatDate(r.date)}</td><td data-label="In">${r.checkIn || "-"}</td><td data-label="Out">${r.checkOut || "-"}</td><td data-label="Hours">${r.hours || "-"}</td><td data-label="Status"><span class="${badgeClass(r.status)}">${r.status}</span></td><td data-label="Verify">${escapeHtml(displayVerification(r.verification))}</td><td data-label="Remark">${escapeHtml(r.remark || "-")}</td>${admin ? `<td data-label="Updated By">${escapeHtml(r.updatedBy || "-")}</td><td data-label="Action"><button class="btn danger" data-delete-attendance="${r.id}">Delete</button></td>` : ""}</tr>`).join("")}</tbody></table></div>`;
 }
 
 function calendarForEmployee(employeeId) {
@@ -963,7 +989,7 @@ function renderLeaveForm() {
       <form class="panel form-grid" id="leaveForm">
         <div class="panel-head wide"><h2>Submit Work Request</h2></div>
         <label class="field"><span>Type</span><select id="leaveType"><option>Annual Leave</option><option>Medical Leave</option><option>WFH</option><option>Business Trip</option><option>Emergency Leave</option><option>Unpaid Leave</option></select></label>
-        <label class="field"><span>Duration</span><select id="leaveDuration"><option>Full Day</option><option>Half Day Morning</option><option>Half Day Afternoon</option></select></label>
+        <label class="field"><span class="label-row">Duration ${helpTip("Choose Full Day for one or more full working days. Half Day Morning/Afternoon must use the same From and To date.")}</span><select id="leaveDuration"><option>Full Day</option><option>Half Day Morning</option><option>Half Day Afternoon</option></select></label>
         <label class="field"><span>From</span><input id="leaveFrom" type="date" min="${today()}" required></label>
         <label class="field"><span>To</span><input id="leaveTo" type="date" min="${today()}" required></label>
         <label class="field wide"><span>Reason</span><textarea id="leaveReason" required></textarea></label>
@@ -978,7 +1004,7 @@ function renderLeaveApproval() {
   const requests = state.leaves
     .filter((leave) => includesSearch([employee(leave.employeeId)?.name, leave.employeeId, leave.type, requestDurationLabel(leave), leave.from, formatDate(leave.from), leave.to, formatDate(leave.to), leave.reason, leave.status], "requestsAll"))
     .slice().reverse();
-  return `<section class="search-panel">${searchBox("requestsAll", "Search requests")}</section><section class="panel"><div class="panel-head"><h2>Work Requests</h2><button class="btn" data-export-requests="all">Export CSV</button></div>${leaveTable(requests, true)}</section>`;
+  return `<section class="search-panel">${searchBox("requestsAll", "Search requests")}</section><section class="panel"><div class="panel-head"><h2>Work Requests ${helpTip("Work Requests include leave, WFH, business trip, medical leave and similar approved absence types. Approved WFH/business trip is treated as an accepted work arrangement, not absence.")}</h2><button class="btn" data-export-requests="all">Export CSV</button></div>${leaveTable(requests, true)}</section>`;
 }
 
 function leaveTable(leaves, admin) {
@@ -1020,14 +1046,14 @@ function renderSettings() {
       <label class="field"><span>Company Name</span><input id="companyName" value="${escapeHtml(state.company.name)}" required></label>
       <label class="field"><span>Office Name</span><input id="officeName" value="${escapeHtml(state.company.officeName)}" required></label>
       <label class="field"><span>Late After</span><input id="lateAfter" type="time" value="${state.company.lateAfter}" required></label>
-      <label class="field"><span>QR / Code Refresh</span><select id="codeInterval"><option value="30" ${state.company.codeInterval === 30 ? "selected" : ""}>30 seconds</option><option value="60" ${state.company.codeInterval === 60 ? "selected" : ""}>60 seconds</option></select></label>
+      <label class="field"><span class="label-row">QR / Code Refresh ${helpTip("How often the QR and manual code rotate. Shorter timing is safer because leaked codes expire faster.")}</span><select id="codeInterval"><option value="30" ${state.company.codeInterval === 30 ? "selected" : ""}>30 seconds</option><option value="60" ${state.company.codeInterval === 60 ? "selected" : ""}>60 seconds</option></select></label>
       <label class="field">
         <span class="label-row">Code Secret <span class="help-tip" tabindex="0" aria-label="Code Secret explanation">?<span class="help-text">Private seed used to generate rotating QR and manual codes. Change it if a code is leaked.</span></span></span>
         <input id="codeSecret" value="${escapeHtml(state.company.codeSecret)}" required>
       </label>
       <label class="field"><span>Office Latitude</span><input id="officeLatitude" type="number" step="0.000001" value="${state.company.officeLatitude}" required></label>
       <label class="field"><span>Office Longitude</span><input id="officeLongitude" type="number" step="0.000001" value="${state.company.officeLongitude}" required></label>
-      <label class="field"><span>Allowed Radius (m)</span><input id="officeRadius" type="number" min="20" max="5000" step="10" value="${state.company.officeRadius}" required></label>
+      <label class="field"><span class="label-row">Allowed Radius (m) ${helpTip("Employees must be inside this GPS radius to check in by QR or manual code. Use a larger radius only if the office GPS is unstable.")}</span><input id="officeRadius" type="number" min="20" max="5000" step="10" value="${state.company.officeRadius}" required></label>
       <div class="field wide">
         <span>Working Days</span>
         <div class="day-grid">
@@ -1320,8 +1346,8 @@ async function useMyLocationForOffice() {
 
 function exportAttendance(scope) {
   const records = scope === "all" ? state.attendance : state.attendance.filter((item) => item.employeeId === session.id);
-  const rows = records.map((r) => [employee(r.employeeId)?.name || r.employeeId, r.employeeId, r.date, r.checkIn, r.checkOut || "", r.hours || "", r.status, displayVerification(r.verification), r.remark || ""]);
-  downloadCSV(`${safeName(exportBase(scope, "attendance-records"))}.csv`, ["Employee", "Employee ID", "Date", "Check In", "Check Out", "Hours", "Status", "Verification", "Remark"], rows);
+  const rows = records.map((r) => [employee(r.employeeId)?.name || r.employeeId, r.employeeId, r.date, r.checkIn, r.checkOut || "", r.hours || "", r.status, displayVerification(r.verification), r.remark || "", r.updatedBy || "", r.updatedAt || ""]);
+  downloadCSV(`${safeName(exportBase(scope, "attendance-records"))}.csv`, ["Employee", "Employee ID", "Date", "Check In", "Check Out", "Hours", "Status", "Verification", "Remark", "Updated By", "Updated At"], rows);
 }
 
 function exportRequests(scope) {
@@ -1386,7 +1412,7 @@ function exportCalendar(target) {
 function openManualAttendanceModal() {
   if (!state.employees.length) return toast("Add employees first.");
   const modal = document.querySelector("#modal");
-  modal.innerHTML = `<form class="modal" id="manualAttendanceForm"><h2>Add Manual Status</h2><p class="helper">Use this for approved corrections, absence updates, or public holidays. A remark is required for audit tracking.</p><label class="field"><span>Employee</span><select id="manualEmployee">${state.employees.map((emp) => `<option value="${emp.id}">${escapeHtml(emp.name)} (${escapeHtml(emp.id)})</option>`).join("")}</select></label><label class="field"><span>From Date</span><input id="manualFrom" type="date" value="${today()}" required></label><label class="field"><span>To Date</span><input id="manualTo" type="date" value="${today()}" required></label><label class="field"><span>Status</span><select id="manualStatus"><option>Absent</option><option>Public Holiday</option><option>Present</option><option>Late</option><option>Checked In</option></select></label><label class="field"><span>Check In Time</span><input id="manualCheckIn" type="time"></label><label class="field"><span>Check Out Time</span><input id="manualCheckOut" type="time"></label><label class="field check-line"><input id="manualAllEmployees" type="checkbox"><span>Apply to all employees for this date range</span></label><label class="field"><span>Remark / Proof</span><textarea id="manualRemark" required placeholder="Example: Public holiday approved by management, medical proof received, admin correction after missed checkout"></textarea></label><div class="modal-actions"><button class="btn primary" type="submit">Save Status</button><button class="btn" type="button" id="closeModal">Cancel</button></div></form>`;
+  modal.innerHTML = `<form class="modal" id="manualAttendanceForm"><h2>Add Manual Status ${helpTip("Use this only for approved corrections such as public holiday, confirmed absence, missed checkout, HR-approved correction, or admin override. Every save is shown to the employee and stored in audit log.")}</h2><p class="helper">Use this for approved corrections, absence updates, or public holidays. A remark is required for audit tracking.</p><label class="field"><span>Employee</span><select id="manualEmployee">${state.employees.map((emp) => `<option value="${emp.id}">${escapeHtml(emp.name)} (${escapeHtml(emp.id)})</option>`).join("")}</select></label><label class="field"><span>From Date</span><input id="manualFrom" type="date" value="${today()}" required></label><label class="field"><span>To Date</span><input id="manualTo" type="date" value="${today()}" required></label><label class="field"><span class="label-row">Status ${helpTip("Absent/Public Holiday do not use check-in time. Present/Late/Checked In require check-in time so the record is meaningful.")}</span><select id="manualStatus"><option>Absent</option><option>Public Holiday</option><option>Present</option><option>Late</option><option>Checked In</option></select></label><label class="field"><span>Check In Time</span><input id="manualCheckIn" type="time"></label><label class="field"><span>Check Out Time</span><input id="manualCheckOut" type="time"></label><label class="field check-line"><input id="manualAllEmployees" type="checkbox"><span>Apply to all employees for this date range</span></label><label class="field"><span>Remark / Proof</span><textarea id="manualRemark" required placeholder="Example: Public holiday approved by management, medical proof received, admin correction after missed checkout"></textarea></label><div class="modal-actions"><button class="btn primary" type="submit">Save Status</button><button class="btn" type="button" id="closeModal">Cancel</button></div></form>`;
   modal.classList.add("show");
   document.querySelector("#closeModal").addEventListener("click", closeModal);
   document.querySelector("#manualAttendanceForm").addEventListener("submit", saveManualAttendance);
@@ -1420,6 +1446,8 @@ function saveManualAttendance(event) {
           existing.status = status;
           existing.remark = remark;
           existing.verification = "Admin manual update";
+          existing.updatedBy = session.name;
+          existing.updatedAt = new Date().toLocaleString("en-GB", { hour12: false });
           if (manualCheckIn || manualCheckOut || clearTimes) {
             existing.checkIn = manualCheckIn || "";
             existing.checkOut = manualCheckOut || "";
@@ -1435,7 +1463,9 @@ function saveManualAttendance(event) {
             hours: manualCheckIn && manualCheckOut ? duration(manualCheckIn, manualCheckOut) : "",
             status,
             verification: "Admin manual update",
-            remark
+            remark,
+            updatedBy: session.name,
+            updatedAt: new Date().toLocaleString("en-GB", { hour12: false })
           });
         }
         changed += 1;
