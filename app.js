@@ -1100,14 +1100,21 @@ function deleteAttendance(id) {
   const record = state.attendance.find((item) => item.id === id);
   if (!record) return toast("Attendance record not found.");
   const emp = employee(record.employeeId);
-  const remark = prompt(`Reason for deleting attendance record for ${emp?.name || record.employeeId} on ${formatDate(record.date)}:`);
-  if (remark === null) return;
-  if (!remark.trim()) return toast("Deletion reason is required.");
-  state.attendance = state.attendance.filter((item) => item.id !== id);
-  addAudit("Attendance deleted", `${session.name} deleted attendance record for ${emp?.name || record.employeeId} on ${formatDate(record.date)}. Reason: ${remark.trim()}. Deleted record: In ${record.checkIn}, Out ${record.checkOut || "-"}, Status ${record.status}.`);
-  saveState("Attendance record deleted.");
-  render();
-  toast("Attendance record deleted.");
+  const modal = document.querySelector("#modal");
+  modal.innerHTML = `<form class="modal" id="deleteAttendanceForm"><h2>Delete Attendance Record</h2><p class="helper">This action will be saved in the audit log.</p><div class="record-summary"><strong>${escapeHtml(emp?.name || record.employeeId)}</strong><span>${formatDate(record.date)} | In ${escapeHtml(record.checkIn || "-")} | Out ${escapeHtml(record.checkOut || "-")} | ${escapeHtml(record.status)}</span></div><label class="field"><span>Deletion Remark / Proof</span><textarea id="deleteRemark" required placeholder="Example: Duplicate record, wrong employee selected, accidental checkout correction"></textarea></label><div class="modal-actions"><button class="btn danger" type="submit">Delete Record</button><button class="btn" type="button" id="closeModal">Cancel</button></div></form>`;
+  modal.classList.add("show");
+  document.querySelector("#closeModal").addEventListener("click", closeModal);
+  document.querySelector("#deleteAttendanceForm").addEventListener("submit", (event) => {
+    event.preventDefault();
+    const remark = document.querySelector("#deleteRemark").value.trim();
+    if (!remark) return toast("Deletion remark is required.");
+    state.attendance = state.attendance.filter((item) => item.id !== id);
+    addAudit("Attendance deleted", `${session.name} deleted attendance record for ${emp?.name || record.employeeId} on ${formatDate(record.date)}. Reason: ${remark}. Deleted record: In ${record.checkIn || "-"}, Out ${record.checkOut || "-"}, Status ${record.status}.`);
+    saveState("Attendance record deleted.");
+    closeModal();
+    render();
+    toast("Attendance record deleted.");
+  });
 }
 
 function saveProfile(event) {
@@ -1237,7 +1244,7 @@ function exportCalendar(target) {
 function openManualAttendanceModal() {
   if (!state.employees.length) return toast("Add employees first.");
   const modal = document.querySelector("#modal");
-  modal.innerHTML = `<form class="modal" id="manualAttendanceForm"><h2>Add Manual Status</h2><p class="helper">Use this for approved corrections, absence updates, or public holidays. A remark is required for audit tracking.</p><label class="field"><span>Employee</span><select id="manualEmployee">${state.employees.map((emp) => `<option value="${emp.id}">${escapeHtml(emp.name)} (${escapeHtml(emp.id)})</option>`).join("")}</select></label><label class="field"><span>From Date</span><input id="manualFrom" type="date" value="${today()}" required></label><label class="field"><span>To Date</span><input id="manualTo" type="date" value="${today()}" required></label><label class="field"><span>Status</span><select id="manualStatus"><option>Absent</option><option>Public Holiday</option><option>Present</option><option>Late</option><option>Checked In</option></select></label><label class="field check-line"><input id="manualAllEmployees" type="checkbox"><span>Apply to all employees for this date range</span></label><label class="field"><span>Remark / Proof</span><textarea id="manualRemark" required placeholder="Example: Public holiday approved by management, medical proof received, admin correction after missed checkout"></textarea></label><div class="modal-actions"><button class="btn primary" type="submit">Save Status</button><button class="btn" type="button" id="closeModal">Cancel</button></div></form>`;
+  modal.innerHTML = `<form class="modal" id="manualAttendanceForm"><h2>Add Manual Status</h2><p class="helper">Use this for approved corrections, absence updates, or public holidays. A remark is required for audit tracking.</p><label class="field"><span>Employee</span><select id="manualEmployee">${state.employees.map((emp) => `<option value="${emp.id}">${escapeHtml(emp.name)} (${escapeHtml(emp.id)})</option>`).join("")}</select></label><label class="field"><span>From Date</span><input id="manualFrom" type="date" value="${today()}" required></label><label class="field"><span>To Date</span><input id="manualTo" type="date" value="${today()}" required></label><label class="field"><span>Status</span><select id="manualStatus"><option>Absent</option><option>Public Holiday</option><option>Present</option><option>Late</option><option>Checked In</option></select></label><label class="field"><span>Check In Time</span><input id="manualCheckIn" type="time"></label><label class="field"><span>Check Out Time</span><input id="manualCheckOut" type="time"></label><label class="field check-line"><input id="manualAllEmployees" type="checkbox"><span>Apply to all employees for this date range</span></label><label class="field"><span>Remark / Proof</span><textarea id="manualRemark" required placeholder="Example: Public holiday approved by management, medical proof received, admin correction after missed checkout"></textarea></label><div class="modal-actions"><button class="btn primary" type="submit">Save Status</button><button class="btn" type="button" id="closeModal">Cancel</button></div></form>`;
   modal.classList.add("show");
   document.querySelector("#closeModal").addEventListener("click", closeModal);
   document.querySelector("#manualAttendanceForm").addEventListener("submit", saveManualAttendance);
@@ -1248,13 +1255,18 @@ function saveManualAttendance(event) {
   const from = document.querySelector("#manualFrom").value;
   const to = document.querySelector("#manualTo").value;
   const status = document.querySelector("#manualStatus").value;
+  const manualCheckIn = document.querySelector("#manualCheckIn").value;
+  const manualCheckOut = document.querySelector("#manualCheckOut").value;
   const remark = document.querySelector("#manualRemark").value.trim();
   const applyAll = document.querySelector("#manualAllEmployees").checked;
   if (to < from) return toast("To Date must be after From Date.");
+  if (manualCheckOut && !manualCheckIn) return toast("Enter check-in time before check-out time.");
+  if (manualCheckIn && manualCheckOut && manualCheckOut < manualCheckIn) return toast("Check-out time must be after check-in time.");
   if (!remark) return toast("Remark is required.");
   const targets = applyAll ? state.employees : [employee(document.querySelector("#manualEmployee").value)].filter(Boolean);
   const dates = dateRange(from, to);
   let changed = 0;
+  const clearTimes = ["Absent", "Public Holiday"].includes(status);
   targets.forEach((emp) => {
     dates
       .filter((dateValue) => !emp.employmentDate || dateValue >= emp.employmentDate)
@@ -1264,17 +1276,19 @@ function saveManualAttendance(event) {
           existing.status = status;
           existing.remark = remark;
           existing.verification = "Admin manual update";
-          if (!existing.checkIn) existing.checkIn = "";
-          if (!existing.checkOut) existing.checkOut = "";
-          if (!existing.hours) existing.hours = "";
+          if (manualCheckIn || manualCheckOut || clearTimes) {
+            existing.checkIn = manualCheckIn || "";
+            existing.checkOut = manualCheckOut || "";
+            existing.hours = manualCheckIn && manualCheckOut ? duration(manualCheckIn, manualCheckOut) : "";
+          }
         } else {
           state.attendance.push({
             id: `ATT${Date.now()}${Math.random().toString(16).slice(2, 6)}`,
             employeeId: emp.id,
             date: dateValue,
-            checkIn: "",
-            checkOut: "",
-            hours: "",
+            checkIn: manualCheckIn || "",
+            checkOut: manualCheckOut || "",
+            hours: manualCheckIn && manualCheckOut ? duration(manualCheckIn, manualCheckOut) : "",
             status,
             verification: "Admin manual update",
             remark
@@ -1284,7 +1298,7 @@ function saveManualAttendance(event) {
       });
   });
   if (!changed) return toast("No eligible employee dates in this range.");
-  addAudit("Manual attendance status", `${session.name} set ${status} for ${targets.length} employee(s), ${changed} date record(s), from ${formatDate(from)} to ${formatDate(to)}. Remark: ${remark}.`);
+  addAudit("Manual attendance status", `${session.name} set ${status} for ${targets.length} employee(s), ${changed} date record(s), from ${formatDate(from)} to ${formatDate(to)}${manualCheckIn ? `, In ${manualCheckIn}` : ""}${manualCheckOut ? `, Out ${manualCheckOut}` : ""}. Remark: ${remark}.`);
   saveState("Attendance status updated.");
   closeModal();
   render();
