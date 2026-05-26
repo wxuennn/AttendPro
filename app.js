@@ -1,7 +1,7 @@
 const STORAGE_KEY = "attendpro-state-v2";
 const COMPANY_KEY_STORAGE = "attendpro-company-key";
 const DATASET_PASSWORD_STORAGE = "attendpro-dataset-password";
-const APP_VERSION = "20260526-work-request-notify";
+const APP_VERSION = "20260526-notification-polish";
 const APP_VERSION_STORAGE = "attendpro-app-version";
 const TAB_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const channel = "BroadcastChannel" in window ? new BroadcastChannel("attendpro-sync") : null;
@@ -171,8 +171,8 @@ function normalize(input) {
     })),
     attendance: input.attendance || [],
     leaves: input.leaves || [],
-    announcements: input.announcements || [],
-    feedbacks: input.feedbacks || [],
+    announcements: (input.announcements || []).map((item) => ({ ...item, readBy: item.readBy || [] })),
+    feedbacks: (input.feedbacks || []).map((item) => ({ ...item, status: item.status || "New" })),
     auditLogs: input.auditLogs || [],
     deletedAttendanceIds: input.deletedAttendanceIds || [],
     deletedAdminIds: input.deletedAdminIds || []
@@ -550,10 +550,28 @@ function workRequestNotificationCount() {
   return state.leaves.filter((request) => request.employeeId === session.id && (request.status === "Pending" || (request.status !== "Pending" && !request.employeeSeen))).length;
 }
 
+function feedbackNotificationCount() {
+  return session?.role === "admin" ? state.feedbacks.filter((item) => item.status !== "Reviewed").length : 0;
+}
+
+function announcementNotificationCount() {
+  if (session?.role !== "employee") return 0;
+  return state.announcements.filter((item) => !(item.readBy || []).includes(session.id)).length;
+}
+
+function attendanceNotificationCount() {
+  if (session?.role !== "employee") return 0;
+  return adminManualUpdates(session.id).filter((record) => !record.employeeSeen).length;
+}
+
 function navNotification(key) {
-  const requestKey = session?.role === "admin" ? "leaves" : "leave";
-  const count = key === requestKey ? workRequestNotificationCount() : 0;
-  return count ? `<span class="nav-dot" aria-label="${count} work request notification">${count > 9 ? "9+" : count}</span>` : "";
+  const count = {
+    [session?.role === "admin" ? "leaves" : "leave"]: workRequestNotificationCount(),
+    feedback: feedbackNotificationCount(),
+    announcements: announcementNotificationCount(),
+    history: attendanceNotificationCount()
+  }[key] || 0;
+  return count ? `<span class="nav-dot" aria-label="${count} notification">${count > 9 ? "9+" : count}</span>` : "";
 }
 
 function markEmployeeRequestsSeen() {
@@ -566,6 +584,31 @@ function markEmployeeRequestsSeen() {
     }
   });
   if (changed) saveState("Work request notifications viewed.");
+}
+
+function markAnnouncementsSeen() {
+  if (session?.role !== "employee") return;
+  let changed = false;
+  state.announcements.forEach((item) => {
+    item.readBy = item.readBy || [];
+    if (!item.readBy.includes(session.id)) {
+      item.readBy.push(session.id);
+      changed = true;
+    }
+  });
+  if (changed) saveState("Announcements viewed.");
+}
+
+function markAttendanceUpdatesSeen() {
+  if (session?.role !== "employee") return;
+  let changed = false;
+  adminManualUpdates(session.id).forEach((record) => {
+    if (!record.employeeSeen) {
+      record.employeeSeen = true;
+      changed = true;
+    }
+  });
+  if (changed) saveState("Attendance updates viewed.");
 }
 
 function evidenceLabel(request) {
@@ -1067,6 +1110,8 @@ function renderApp() {
   `;
   document.querySelectorAll("[data-view]").forEach((button) => button.addEventListener("click", () => {
     if (button.dataset.view === "leave") markEmployeeRequestsSeen();
+    if (button.dataset.view === "announcements") markAnnouncementsSeen();
+    if (button.dataset.view === "history") markAttendanceUpdatesSeen();
     view = button.dataset.view;
     render();
   }));
@@ -1333,7 +1378,7 @@ function renderAbout() {
 
 function leaveTable(leaves, admin) {
   if (!leaves.length) return `<p class="empty">No requests.</p>`;
-  return `<div class="table-wrap record-scroll"><table class="responsive-table"><thead><tr>${admin ? "<th>Employee</th>" : ""}<th>Type</th><th>Duration</th><th>From</th><th>To</th><th>Reason</th><th>Evidence</th><th>Status</th>${admin ? "<th>Action</th>" : ""}</tr></thead><tbody>${leaves.map((leave) => `<tr>${admin ? `<td data-label="Employee">${escapeHtml(employee(leave.employeeId)?.name || leave.employeeId)}</td>` : ""}<td data-label="Type">${leave.type}</td><td data-label="Duration">${requestDurationLabel(leave)}</td><td data-label="From">${formatDate(leave.from)}</td><td data-label="To">${formatDate(leave.to)}</td><td data-label="Reason">${escapeHtml(leave.reason)}</td><td data-label="Evidence" class="evidence-cell">${evidenceLink(leave)}</td><td data-label="Status"><span class="${badgeClass(leave.status)}">${leave.status}</span></td>${admin ? `<td class="actions" data-label="Action"><button class="btn primary" data-approve="${leave.id}" ${leave.status !== "Pending" ? "disabled" : ""}>Approve</button><button class="btn danger" data-reject="${leave.id}" ${leave.status !== "Pending" ? "disabled" : ""}>Reject</button></td>` : ""}</tr>`).join("")}</tbody></table></div>`;
+  return `<div class="table-wrap record-scroll"><table class="responsive-table work-request-table"><thead><tr>${admin ? "<th>Employee</th>" : ""}<th>Status</th><th>Type</th><th>Duration</th><th>From</th><th>To</th><th>Evidence</th><th>Reason</th>${admin ? "<th>Action</th>" : ""}</tr></thead><tbody>${leaves.map((leave) => `<tr>${admin ? `<td data-label="Employee">${escapeHtml(employee(leave.employeeId)?.name || leave.employeeId)}</td>` : ""}<td data-label="Status" class="status-cell"><span class="${badgeClass(leave.status)}">${leave.status}</span></td><td data-label="Type">${leave.type}</td><td data-label="Duration">${requestDurationLabel(leave)}</td><td data-label="From">${formatDate(leave.from)}</td><td data-label="To">${formatDate(leave.to)}</td><td data-label="Evidence" class="evidence-cell">${evidenceLink(leave)}</td><td data-label="Reason">${escapeHtml(leave.reason)}</td>${admin ? `<td class="actions" data-label="Action"><button class="btn primary" data-approve="${leave.id}" ${leave.status !== "Pending" ? "disabled" : ""}>Approve</button><button class="btn danger" data-reject="${leave.id}" ${leave.status !== "Pending" ? "disabled" : ""}>Reject</button></td>` : ""}</tr>`).join("")}</tbody></table></div>`;
 }
 
 function renderEmployees() {
@@ -1751,6 +1796,7 @@ function submitAnnouncement(event) {
     date: document.querySelector("#announcementDate").value,
     time: document.querySelector("#announcementTime").value,
     author: session.name,
+    readBy: [],
     holidayAction,
     holidayDate
   };
@@ -1820,6 +1866,7 @@ function openAttendanceEditModal(id) {
     record.remark = remark;
     record.updatedBy = session.name;
     record.updatedAt = new Date().toLocaleString("en-GB", { hour12: false });
+    record.employeeSeen = false;
     addAudit("Attendance edited", `${session.name} edited attendance for ${emp?.name || record.employeeId}. Before: ${before}. After: Date ${record.date}, In ${record.checkIn || "-"}, Out ${record.checkOut || "-"}, Status ${record.status}. Remark: ${remark}.`);
     saveState("Attendance record updated.");
     closeModal();
@@ -2063,6 +2110,7 @@ function saveManualAttendance(event) {
           existing.verification = "Admin manual update";
           existing.updatedBy = session.name;
           existing.updatedAt = new Date().toLocaleString("en-GB", { hour12: false });
+          existing.employeeSeen = false;
           if (manualCheckIn && !existing.sessionNo) {
             existing.sessionNo = nextSessionNo;
             existing.sessionLabel = `Manual Session ${nextSessionNo}`;
@@ -2086,7 +2134,8 @@ function saveManualAttendance(event) {
             sessionLabel: manualCheckIn ? `Manual Session ${nextSessionNo}` : "",
             remark,
             updatedBy: session.name,
-            updatedAt: new Date().toLocaleString("en-GB", { hour12: false })
+            updatedAt: new Date().toLocaleString("en-GB", { hour12: false }),
+            employeeSeen: false
           });
         }
         changed += 1;

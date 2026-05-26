@@ -621,6 +621,8 @@ th { color: var(--muted); text-transform: uppercase; font-size: 0.76rem; letter-
 }
 .evidence-cell a { color: var(--primary-strong); font-weight: 850; }
 .evidence-cell small { display: block; margin-top: 4px; color: var(--muted); }
+.work-request-table { min-width: 860px; }
+.work-request-table .status-cell { min-width: 112px; }
 .toast { position: fixed; right: 18px; bottom: 18px; display: none; max-width: 360px; padding: 12px 14px; border-radius: var(--radius); background: var(--sidebar); color: white; font-weight: 760; box-shadow: var(--shadow); z-index: 20; }
 .toast.show { display: block; }
 .toast.inline { position: static; display: block; margin-top: 12px; background: transparent; color: #8a4b09; box-shadow: none; padding: 0; }
