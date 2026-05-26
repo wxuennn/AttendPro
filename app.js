@@ -1,7 +1,7 @@
 const STORAGE_KEY = "attendpro-state-v2";
 const COMPANY_KEY_STORAGE = "attendpro-company-key";
 const DATASET_PASSWORD_STORAGE = "attendpro-dataset-password";
-const APP_VERSION = "20260526-3aeed01";
+const APP_VERSION = "20260526-work-request-notify";
 const APP_VERSION_STORAGE = "attendpro-app-version";
 const TAB_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const channel = "BroadcastChannel" in window ? new BroadcastChannel("attendpro-sync") : null;
@@ -544,6 +544,41 @@ function requestConflicts(newRequest, existingRequest) {
   return pair !== "Half Day Afternoon|Half Day Morning";
 }
 
+function workRequestNotificationCount() {
+  if (!session) return 0;
+  if (session.role === "admin") return state.leaves.filter((request) => request.status === "Pending").length;
+  return state.leaves.filter((request) => request.employeeId === session.id && (request.status === "Pending" || (request.status !== "Pending" && !request.employeeSeen))).length;
+}
+
+function navNotification(key) {
+  const requestKey = session?.role === "admin" ? "leaves" : "leave";
+  const count = key === requestKey ? workRequestNotificationCount() : 0;
+  return count ? `<span class="nav-dot" aria-label="${count} work request notification">${count > 9 ? "9+" : count}</span>` : "";
+}
+
+function markEmployeeRequestsSeen() {
+  if (session?.role !== "employee") return;
+  let changed = false;
+  state.leaves.forEach((request) => {
+    if (request.employeeId === session.id && request.status !== "Pending" && !request.employeeSeen) {
+      request.employeeSeen = true;
+      changed = true;
+    }
+  });
+  if (changed) saveState("Work request notifications viewed.");
+}
+
+function evidenceLabel(request) {
+  const evidence = request.evidence || {};
+  return evidence.name || evidence.note || request.evidenceNote || "-";
+}
+
+function evidenceLink(request) {
+  const evidence = request.evidence || {};
+  if (!evidence.dataUrl) return escapeHtml(evidenceLabel(request));
+  return `<a href="${evidence.dataUrl}" target="_blank" rel="noopener">${escapeHtml(evidence.name || "View evidence")}</a>${evidence.note ? `<small>${escapeHtml(evidence.note)}</small>` : ""}`;
+}
+
 function approvedRequestForDate(employeeId, dateValue) {
   return requestsForDate(employeeId, dateValue).find((request) => request.status === "Approved");
 }
@@ -1016,7 +1051,7 @@ function renderApp() {
       <aside class="sidebar">
         <div class="brand-lockup"><span class="brand-mark">AP</span><span>${escapeHtml(state.company.name)}</span></div>
         <div class="user-card"><strong>${escapeHtml(session.name)}</strong><span>${session.role}</span></div>
-        <nav class="main-nav">${nav.map(([key, label]) => `<button data-view="${key}" class="${view === key ? "active" : ""}">${label}</button>`).join("")}</nav>
+        <nav class="main-nav">${nav.map(([key, label]) => `<button data-view="${key}" class="${view === key ? "active" : ""}"><span>${label}</span>${navNotification(key)}</button>`).join("")}</nav>
         <nav class="bottom-nav"><button data-view="about" class="${view === "about" ? "active" : ""}">About Us</button></nav>
       </aside>
       <main>
@@ -1031,6 +1066,7 @@ function renderApp() {
     <div class="toast" id="toast"></div>
   `;
   document.querySelectorAll("[data-view]").forEach((button) => button.addEventListener("click", () => {
+    if (button.dataset.view === "leave") markEmployeeRequestsSeen();
     view = button.dataset.view;
     render();
   }));
@@ -1211,7 +1247,8 @@ function calendarPanel(employeeId, admin = false) {
   const years = calendarYearOptions(employeeId);
   const date = calendarPeriodDate();
   const months = Array.from({ length: 12 }, (_, index) => new Date(2026, index, 1).toLocaleDateString("en-GB", { month: "long" }));
-  return `<div class="calendar-toolbar">${admin ? `<label class="search-field"><span>Employee</span><select class="select-control" id="calendarEmployee">${state.employees.map((emp) => `<option value="${emp.id}" ${emp.id === employeeId ? "selected" : ""}>${escapeHtml(emp.name)}</option>`).join("")}</select></label>` : ""}<label class="search-field"><span>Year</span><select class="select-control" id="calendarYear">${years.map((year) => `<option value="${year}" ${year === selectedCalendarYear ? "selected" : ""}>${year}</option>`).join("")}</select></label><label class="search-field"><span>Month</span><select class="select-control" id="calendarMonth">${months.map((month, index) => `<option value="${index}" ${index === selectedCalendarMonth ? "selected" : ""}>${month}</option>`).join("")}</select></label><button class="btn" data-export-calendar="${employeeId}">Export Report</button><button class="btn" data-export-timesheet="${employeeId}">Export Timesheet</button>${admin ? `<button class="btn" data-export-calendar="all">Export All</button><button class="btn" data-export-timesheet="all">All Timesheets</button>` : ""}</div>${calendarForEmployee(employeeId, date)}`;
+  const exportButtons = `<div class="calendar-export-actions"><span>Export</span><button class="btn" data-export-calendar="${employeeId}">Report</button><button class="btn" data-export-timesheet="${employeeId}">Timesheet</button>${admin ? `<button class="btn" data-export-calendar="all">All Reports</button><button class="btn" data-export-timesheet="all">All Timesheets</button>` : ""}</div>`;
+  return `<div class="calendar-toolbar"><div class="calendar-filters">${admin ? `<label class="search-field"><span>Employee</span><select class="select-control" id="calendarEmployee">${state.employees.map((emp) => `<option value="${emp.id}" ${emp.id === employeeId ? "selected" : ""}>${escapeHtml(emp.name)}</option>`).join("")}</select></label>` : ""}<label class="search-field"><span>Year</span><select class="select-control" id="calendarYear">${years.map((year) => `<option value="${year}" ${year === selectedCalendarYear ? "selected" : ""}>${year}</option>`).join("")}</select></label><label class="search-field"><span>Month</span><select class="select-control" id="calendarMonth">${months.map((month, index) => `<option value="${index}" ${index === selectedCalendarMonth ? "selected" : ""}>${month}</option>`).join("")}</select></label></div>${exportButtons}</div>${calendarForEmployee(employeeId, date)}`;
 }
 
 function calendarMonthSummary(employeeId, dates = monthDates()) {
@@ -1230,7 +1267,7 @@ function calendarMonthSummary(employeeId, dates = monthDates()) {
 function renderLeaveForm() {
   const mine = state.leaves
     .filter((leave) => leave.employeeId === session.id)
-    .filter((leave) => includesSearch([leave.type, requestDurationLabel(leave), leave.from, formatDate(leave.from), leave.to, formatDate(leave.to), leave.reason, leave.status], "myRequests"))
+    .filter((leave) => includesSearch([leave.type, requestDurationLabel(leave), leave.from, formatDate(leave.from), leave.to, formatDate(leave.to), leave.reason, evidenceLabel(leave), leave.status], "myRequests"))
     .slice().reverse();
   return `
     <section class="search-panel">${searchBox("myRequests", "Search requests")}</section>
@@ -1243,6 +1280,7 @@ function renderLeaveForm() {
         <label class="field"><span>From</span><input id="leaveFrom" type="date" min="${today()}" required></label>
         <label class="field"><span>To</span><input id="leaveTo" type="date" min="${today()}" required></label>
         <label class="field wide"><span>Reason</span><textarea id="leaveReason" required></textarea></label>
+        <label class="field wide"><span class="label-row">MC / Evidence ${helpTip("Required for Emergency Leave. You can upload a small MC image/PDF or enter a clinic/reference note. Keep files small so the shared Firebase dataset stays fast.")}</span><input id="leaveEvidenceFile" type="file" accept="image/*,.pdf"><input id="leaveEvidenceNote" placeholder="MC number, clinic name, or evidence link/reference"></label>
         <button class="btn primary" type="submit">Submit Request</button>
       </form>
       <section class="panel request-list-panel"><div class="panel-head"><h2>My Requests</h2></div>${leaveTable(mine, false)}</section>
@@ -1263,7 +1301,7 @@ function leaveBalanceTable(employeeId) {
 
 function renderLeaveApproval() {
   const requests = state.leaves
-    .filter((leave) => includesSearch([employee(leave.employeeId)?.name, leave.employeeId, leave.type, requestDurationLabel(leave), leave.from, formatDate(leave.from), leave.to, formatDate(leave.to), leave.reason, leave.status], "requestsAll"))
+    .filter((leave) => includesSearch([employee(leave.employeeId)?.name, leave.employeeId, leave.type, requestDurationLabel(leave), leave.from, formatDate(leave.from), leave.to, formatDate(leave.to), leave.reason, evidenceLabel(leave), leave.status], "requestsAll"))
     .slice().reverse();
   return `<section class="search-panel">${searchBox("requestsAll", "Search requests")}</section><section class="panel"><div class="panel-head"><h2>Work Requests ${helpTip("Work Requests include leave, WFH, business trip, medical leave and similar approved absence types. Approved WFH/business trip is treated as an accepted work arrangement, not absence.")}</h2><button class="btn" data-export-requests="all">Export CSV</button></div>${leaveTable(requests, true)}</section>`;
 }
@@ -1295,7 +1333,7 @@ function renderAbout() {
 
 function leaveTable(leaves, admin) {
   if (!leaves.length) return `<p class="empty">No requests.</p>`;
-  return `<div class="table-wrap record-scroll"><table class="responsive-table"><thead><tr>${admin ? "<th>Employee</th>" : ""}<th>Type</th><th>Duration</th><th>From</th><th>To</th><th>Reason</th><th>Status</th>${admin ? "<th>Action</th>" : ""}</tr></thead><tbody>${leaves.map((leave) => `<tr>${admin ? `<td data-label="Employee">${escapeHtml(employee(leave.employeeId)?.name || leave.employeeId)}</td>` : ""}<td data-label="Type">${leave.type}</td><td data-label="Duration">${requestDurationLabel(leave)}</td><td data-label="From">${formatDate(leave.from)}</td><td data-label="To">${formatDate(leave.to)}</td><td data-label="Reason">${escapeHtml(leave.reason)}</td><td data-label="Status"><span class="${badgeClass(leave.status)}">${leave.status}</span></td>${admin ? `<td class="actions" data-label="Action"><button class="btn primary" data-approve="${leave.id}" ${leave.status !== "Pending" ? "disabled" : ""}>Approve</button><button class="btn danger" data-reject="${leave.id}" ${leave.status !== "Pending" ? "disabled" : ""}>Reject</button></td>` : ""}</tr>`).join("")}</tbody></table></div>`;
+  return `<div class="table-wrap record-scroll"><table class="responsive-table"><thead><tr>${admin ? "<th>Employee</th>" : ""}<th>Type</th><th>Duration</th><th>From</th><th>To</th><th>Reason</th><th>Evidence</th><th>Status</th>${admin ? "<th>Action</th>" : ""}</tr></thead><tbody>${leaves.map((leave) => `<tr>${admin ? `<td data-label="Employee">${escapeHtml(employee(leave.employeeId)?.name || leave.employeeId)}</td>` : ""}<td data-label="Type">${leave.type}</td><td data-label="Duration">${requestDurationLabel(leave)}</td><td data-label="From">${formatDate(leave.from)}</td><td data-label="To">${formatDate(leave.to)}</td><td data-label="Reason">${escapeHtml(leave.reason)}</td><td data-label="Evidence" class="evidence-cell">${evidenceLink(leave)}</td><td data-label="Status"><span class="${badgeClass(leave.status)}">${leave.status}</span></td>${admin ? `<td class="actions" data-label="Action"><button class="btn primary" data-approve="${leave.id}" ${leave.status !== "Pending" ? "disabled" : ""}>Approve</button><button class="btn danger" data-reject="${leave.id}" ${leave.status !== "Pending" ? "disabled" : ""}>Reject</button></td>` : ""}</tr>`).join("")}</tbody></table></div>`;
 }
 
 function renderEmployees() {
@@ -1565,6 +1603,18 @@ function closeModal() {
   document.querySelector("#modal").classList.remove("show");
 }
 
+function readEvidenceFile(file) {
+  if (!file) return Promise.resolve(null);
+  const maxBytes = 750 * 1024;
+  if (file.size > maxBytes) return Promise.reject(new Error("Evidence file is too large. Please use a file below 750 KB or enter a reference note."));
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve({ name: file.name, type: file.type || "application/octet-stream", dataUrl: reader.result });
+    reader.onerror = () => reject(new Error("Cannot read evidence file."));
+    reader.readAsDataURL(file);
+  });
+}
+
 async function checkIn(method) {
   if (attendanceBusy) return toast("Attendance action is already processing.");
   if (!isActiveEmployee()) return toast("Inactive account cannot check in.");
@@ -1615,16 +1665,27 @@ function checkOut() {
   toast("Checked out.");
 }
 
-function submitLeave(event) {
+async function submitLeave(event) {
   event.preventDefault();
   if (!isActiveEmployee()) return toast("Inactive account cannot submit requests.");
   const from = document.querySelector("#leaveFrom").value;
   const to = document.querySelector("#leaveTo").value;
   const duration = document.querySelector("#leaveDuration").value;
+  const type = document.querySelector("#leaveType").value;
+  const evidenceFile = document.querySelector("#leaveEvidenceFile")?.files?.[0] || null;
+  const evidenceNote = document.querySelector("#leaveEvidenceNote")?.value.trim() || "";
   if (from < today()) return toast("Start date cannot be in the past.");
   if (to < from) return toast("End date must be after start date.");
   if (duration !== "Full Day" && from !== to) return toast("Half day requests must use the same From and To date.");
-  const leave = { id: `LEV${Date.now()}`, employeeId: session.id, type: document.querySelector("#leaveType").value, duration, from, to, reason: document.querySelector("#leaveReason").value.trim(), status: "Pending", reviewedBy: "" };
+  if (type === "Emergency Leave" && !evidenceFile && !evidenceNote) return toast("MC or evidence is required for Emergency Leave.");
+  let evidence = null;
+  try {
+    evidence = await readEvidenceFile(evidenceFile);
+  } catch (error) {
+    return toast(error.message || "Evidence upload failed.");
+  }
+  if (evidence || evidenceNote) evidence = { ...(evidence || {}), note: evidenceNote };
+  const leave = { id: `LEV${Date.now()}`, employeeId: session.id, type, duration, from, to, reason: document.querySelector("#leaveReason").value.trim(), evidence, employeeSeen: true, status: "Pending", reviewedBy: "" };
   const duplicate = state.leaves.some((item) => item.employeeId === session.id && requestConflicts(leave, item));
   if (duplicate) return toast("This date already has a pending or approved request. Only Half Day Morning + Half Day Afternoon can share the same date.");
   state.leaves.push(leave);
@@ -1640,6 +1701,7 @@ function updateLeave(id, status) {
   if (leave.status !== "Pending") return toast("This request has already been reviewed.");
   leave.status = status;
   leave.reviewedBy = session.name;
+  leave.employeeSeen = false;
   addAudit(`Request ${status}`, `${session.name} ${status.toLowerCase()} a work request.`);
   saveState("Request updated.");
   render();
@@ -1869,8 +1931,8 @@ function exportAttendance(scope) {
 
 function exportRequests(scope) {
   const requests = scope === "all" ? state.leaves : state.leaves.filter((item) => item.employeeId === session.id);
-  const rows = requests.map((r) => [employee(r.employeeId)?.name || r.employeeId, r.employeeId, r.type, requestDurationLabel(r), r.from, r.to, r.reason, r.status, r.reviewedBy || ""]);
-  downloadCSV(`${safeName(exportBase(scope, "work-requests"))}.csv`, ["Employee", "Employee ID", "Type", "Duration", "From", "To", "Reason", "Status", "Reviewed By"], rows);
+  const rows = requests.map((r) => [employee(r.employeeId)?.name || r.employeeId, r.employeeId, r.type, requestDurationLabel(r), r.from, r.to, r.reason, evidenceLabel(r), r.status, r.reviewedBy || ""]);
+  downloadCSV(`${safeName(exportBase(scope, "work-requests"))}.csv`, ["Employee", "Employee ID", "Type", "Duration", "From", "To", "Reason", "Evidence", "Status", "Reviewed By"], rows);
 }
 
 function exportEmployees() {
