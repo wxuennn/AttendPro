@@ -1,10 +1,21 @@
 const STORAGE_KEY = "attendpro-state-v2";
 const COMPANY_KEY_STORAGE = "attendpro-company-key";
 const DATASET_PASSWORD_STORAGE = "attendpro-dataset-password";
+const APP_VERSION = "20260526-3aeed01";
+const APP_VERSION_STORAGE = "attendpro-app-version";
 const TAB_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const channel = "BroadcastChannel" in window ? new BroadcastChannel("attendpro-sync") : null;
 let companyKey = cleanDatasetKey(new URLSearchParams(location.search).get("company") || localStorage.getItem(COMPANY_KEY_STORAGE) || "default");
 let datasetPassword = localStorage.getItem(`${DATASET_PASSWORD_STORAGE}-${companyKey}`) || "";
+
+if (localStorage.getItem(APP_VERSION_STORAGE) !== APP_VERSION) {
+  localStorage.setItem(APP_VERSION_STORAGE, APP_VERSION);
+  const versionParams = new URLSearchParams(location.search);
+  if (!versionParams.has("fresh")) {
+    versionParams.set("fresh", APP_VERSION);
+    location.replace(`${location.pathname}?${versionParams.toString()}${location.hash || ""}`);
+  }
+}
 
 const seedState = {
   company: {
