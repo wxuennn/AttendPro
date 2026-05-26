@@ -42,15 +42,18 @@ button { border: 0; cursor: pointer; }
 .segmented .active { background: white; color: var(--primary-strong); }
 
 .layout { min-height: 100vh; display: grid; grid-template-columns: 200px minmax(0, 1fr); }
-.sidebar { position: sticky; top: 0; max-height: 100vh; overflow: auto; display: flex; flex-direction: column; gap: 14px; padding: 16px; background: var(--sidebar); color: white; }
+.sidebar { position: sticky; top: 0; height: 100vh; max-height: 100vh; overflow: auto; display: flex; flex-direction: column; gap: 14px; padding: 16px; background: var(--sidebar); color: white; }
 .sidebar nav { display: grid; gap: 6px; }
 .sidebar nav button { min-height: 36px; padding: 0 10px; border-radius: var(--radius); text-align: left; color: rgba(255,255,255,0.72); background: transparent; font-weight: 750; }
 .sidebar nav button.active, .sidebar nav button:hover { color: white; background: rgba(255,255,255,0.12); }
 .main-nav { flex: 1; align-content: start; }
 .bottom-nav {
+  position: sticky;
+  bottom: -16px;
   margin-top: auto;
-  padding-top: 12px;
+  padding: 12px 0 0;
   border-top: 1px solid rgba(255,255,255,0.1);
+  background: var(--sidebar);
 }
 .user-card { padding: 12px; border-radius: var(--radius); background: rgba(255,255,255,0.1); }
 .user-card span { display: block; margin-top: 3px; color: rgba(255,255,255,0.65); text-transform: capitalize; }
@@ -618,7 +621,8 @@ th { color: var(--muted); text-transform: uppercase; font-size: 0.76rem; letter-
 
 @media (max-width: 900px) {
   .layout, .login-screen, .grid.two, .request-layout, .metrics { grid-template-columns: 1fr; }
-  .sidebar { position: static; max-height: none; }
+  .sidebar { position: static; height: auto; max-height: none; }
+  .bottom-nav { position: static; bottom: auto; }
   .request-layout #leaveForm {
     position: static;
     height: auto;

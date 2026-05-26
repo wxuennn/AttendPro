@@ -1276,7 +1276,7 @@ function feedbackTable(items, admin) {
 }
 
 function renderAbout() {
-  return `<section class="panel about-panel"><div class="panel-head"><h2>About AttendPro</h2></div><p>AttendPro is a professional employee attendance management system built for shared company use across desktop and mobile devices. It supports GPS verified check-in, rotating QR/code attendance, leave and work requests, annual calendars, HR schemes, announcements, feedback, audit logs, and live Firebase data sync.</p><div class="policy-grid"><div><span>System Type</span><strong>Employee Attendance System</strong></div><div><span>Access</span><strong>Admin and Employee Portals</strong></div><div><span>Sync</span><strong>Live Shared Dataset</strong></div><div><span>Model</span><strong>Agile Development</strong></div></div></section>`;
+  return `<section class="panel about-panel"><div class="panel-head"><h2>About AttendPro</h2></div><p>AttendPro is an employee attendance system for companies that need a simple, professional way to manage staff check-in, leave requests, public holidays, announcements, feedback, and attendance records across phone and computer.</p><p>The system supports GPS verified attendance, rotating QR/code check-in, shared Firebase data sync, employee and admin portals, audit logs, HR schemes, and exportable reports.</p><div class="policy-grid"><div><span>Purpose</span><strong>Employee Attendance Management</strong></div><div><span>Users</span><strong>Admin and Employee</strong></div><div><span>Devices</span><strong>Phone and Computer</strong></div><div><span>Method</span><strong>Agile Model</strong></div></div></section>`;
 }
 
 function leaveTable(leaves, admin) {
