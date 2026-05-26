@@ -17,6 +17,20 @@ const seedState = {
     officeLongitude: 101.6869,
     officeRadius: 300,
     autoCheckout: false,
+    publicHolidays: [],
+    leavePolicies: [
+      { type: "Annual Leave", days: 14, expires: "12-31" },
+      { type: "Medical Leave", days: 14, expires: "12-31" },
+      { type: "Emergency Leave", days: 3, expires: "12-31" },
+      { type: "Unpaid Leave", days: 0, expires: "12-31" }
+    ],
+    schemes: {
+      Permanent: { monthlyTargetHours: 160, otAfterHours: 176, bonusAfterHours: 190 },
+      "Part-time": { monthlyTargetHours: 80, otAfterHours: 100, bonusAfterHours: 120 },
+      Contract: { monthlyTargetHours: 150, otAfterHours: 170, bonusAfterHours: 185 },
+      Intern: { monthlyTargetHours: 120, otAfterHours: 0, bonusAfterHours: 0 }
+    },
+    about: "AttendPro is a professional attendance, leave, announcement, and employee record system for companies that need live shared data across devices.",
     workingDays: ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
   },
   datasetPassword: "",
@@ -24,6 +38,8 @@ const seedState = {
   employees: [],
   attendance: [],
   leaves: [],
+  announcements: [],
+  feedbacks: [],
   auditLogs: [],
   deletedAttendanceIds: [],
   deletedAdminIds: []
@@ -42,6 +58,7 @@ let selectedAttendanceDate = today();
 let attendanceBusy = false;
 let geofenceWatchId = null;
 let geofenceCheckoutBusy = false;
+let currentDistanceText = "Not checked";
 const searchTerms = {};
 
 const app = document.querySelector("#app");
@@ -112,7 +129,11 @@ function normalize(input) {
       lateAfter: (input.company || {}).lateAfter || legacyPolicy.lateAfter || seedState.company.lateAfter,
       codeSecret: (input.company || {}).codeSecret || legacyPolicy.onsiteSecret || seedState.company.codeSecret,
       codeInterval: Number((input.company || {}).codeInterval ?? legacyPolicy.codeIntervalSeconds ?? seedState.company.codeInterval),
-      autoCheckout: Boolean((input.company || {}).autoCheckout)
+      autoCheckout: Boolean((input.company || {}).autoCheckout),
+      publicHolidays: (input.company || {}).publicHolidays || seedState.company.publicHolidays,
+      leavePolicies: (input.company || {}).leavePolicies || seedState.company.leavePolicies,
+      schemes: { ...seedState.company.schemes, ...((input.company || {}).schemes || {}) },
+      about: (input.company || {}).about || seedState.company.about
     },
     datasetPassword: input.datasetPassword || seedState.datasetPassword,
     admins: (input.admins || seedState.admins).map((admin, index) => {
@@ -127,10 +148,18 @@ function normalize(input) {
       ...emp,
       employmentDate: emp.employmentDate || "",
       employeeType: emp.employeeType || "Permanent",
-      attendanceMode: emp.attendanceMode || (["Part-time", "Contract"].includes(emp.employeeType) ? "Multiple Sessions" : "Single Daily")
+      attendanceMode: emp.attendanceMode || (["Part-time", "Contract"].includes(emp.employeeType) ? "Multiple Sessions" : "Single Daily"),
+      scheme: emp.scheme || emp.employeeType || "Permanent",
+      address: emp.address || "",
+      idNumber: emp.idNumber || "",
+      emergencyContact: emp.emergencyContact || "",
+      vehicleType: emp.vehicleType || "",
+      plateNo: emp.plateNo || ""
     })),
     attendance: input.attendance || [],
     leaves: input.leaves || [],
+    announcements: input.announcements || [],
+    feedbacks: input.feedbacks || [],
     auditLogs: input.auditLogs || [],
     deletedAttendanceIds: input.deletedAttendanceIds || [],
     deletedAdminIds: input.deletedAdminIds || []
@@ -233,6 +262,8 @@ async function mergeWithRemoteState(local, previousState = null) {
       employees: mergeChangedById(remote.employees, local.employees, previous.employees),
       attendance: mergeChangedById(remote.attendance, local.attendance, previous.attendance).filter((record) => !deletedAttendanceIds.includes(record.id)),
       leaves: mergeChangedById(remote.leaves, local.leaves, previous.leaves),
+      announcements: mergeChangedById(remote.announcements, local.announcements, previous.announcements),
+      feedbacks: mergeChangedById(remote.feedbacks, local.feedbacks, previous.feedbacks),
       auditLogs: sortAuditLogs(mergeChangedById(remote.auditLogs, local.auditLogs, previous.auditLogs)).slice(0, 80),
       deletedAttendanceIds,
       deletedAdminIds
@@ -501,6 +532,48 @@ function requestCalendarLabel(request) {
   return duration === "Full Day" ? request.type : `${request.type} (${duration})`;
 }
 
+function leaveUnits(request) {
+  return requestDurationLabel(request).startsWith("Half Day") ? 0.5 : dateRange(request.from, request.to).length;
+}
+
+function leaveUsed(employeeId, type, year = new Date().getFullYear()) {
+  return state.leaves
+    .filter((leave) => leave.employeeId === employeeId && leave.type === type && leave.status === "Approved" && new Date(`${leave.from}T00:00:00`).getFullYear() === year)
+    .reduce((sum, leave) => sum + leaveUnits(leave), 0);
+}
+
+function monthlyWorkedMinutes(employeeId, date = new Date()) {
+  const month = `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}`;
+  return state.attendance
+    .filter((record) => record.employeeId === employeeId && record.date.startsWith(month))
+    .reduce((sum, record) => sum + parseDurationMinutes(record.hours), 0);
+}
+
+function schemeForEmployee(emp) {
+  return state.company.schemes?.[emp.scheme || emp.employeeType] || state.company.schemes?.[emp.employeeType] || { monthlyTargetHours: 0, otAfterHours: 0, bonusAfterHours: 0 };
+}
+
+function schemeStatus(emp) {
+  const worked = monthlyWorkedMinutes(emp.id);
+  const scheme = schemeForEmployee(emp);
+  const target = Number(scheme.monthlyTargetHours || 0) * 60;
+  const ot = Number(scheme.otAfterHours || 0) * 60;
+  const bonus = Number(scheme.bonusAfterHours || 0) * 60;
+  return {
+    worked,
+    targetReached: target ? worked >= target : false,
+    otReached: ot ? worked >= ot : false,
+    bonusReached: bonus ? worked >= bonus : false,
+    targetHours: scheme.monthlyTargetHours || 0,
+    otAfterHours: scheme.otAfterHours || 0,
+    bonusAfterHours: scheme.bonusAfterHours || 0
+  };
+}
+
+function isPublicHoliday(dateValue) {
+  return (state.company.publicHolidays || []).some((holiday) => holiday.date === dateValue);
+}
+
 function attendanceForDate(employeeId, dateValue) {
   return state.attendance.filter((item) => item.employeeId === employeeId && item.date === dateValue);
 }
@@ -525,6 +598,7 @@ function calendarStatus(employeeId, dateValue) {
   const approved = approvedRequestForDate(employeeId, dateValue);
   const pending = requestsForDate(employeeId, dateValue).find((request) => request.status === "Pending");
   const rejected = requestsForDate(employeeId, dateValue).find((request) => request.status === "Rejected");
+  if (isPublicHoliday(dateValue)) return { label: "Public Holiday", type: "holiday" };
   if (approved) return { label: requestCalendarLabel(approved), type: approved.type.includes("WFH") ? "wfh" : "approved" };
   if (pending) return { label: `Pending ${requestCalendarLabel(pending)}`, type: "pending" };
   if (rejected) return { label: `Rejected ${requestCalendarLabel(rejected)}`, type: "rejected" };
@@ -556,6 +630,14 @@ function monthDates(value = new Date()) {
     const day = index + 1;
     return `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
   });
+}
+
+function yearDates(year = new Date().getFullYear()) {
+  const dates = [];
+  for (let month = 0; month < 12; month += 1) {
+    dates.push(...monthDates(new Date(year, month, 1)));
+  }
+  return dates;
 }
 
 function dateRange(from, to) {
@@ -637,8 +719,8 @@ function exportBase(scope, label) {
   return `${companyName}-${label}-${today()}`;
 }
 
-function monthLabel() {
-  return new Date().toLocaleDateString("en-GB", { month: "long", year: "numeric" });
+function monthLabel(value = new Date()) {
+  return value.toLocaleDateString("en-GB", { month: "long", year: "numeric" });
 }
 
 function searchBox(key, placeholder = "Search") {
@@ -907,10 +989,10 @@ function renderApp() {
   const isAdmin = session.role === "admin";
   const inactiveEmployee = session.role === "employee" && !isActiveEmployee();
   const nav = isAdmin
-    ? [["dashboard", "Dashboard"], ["employees", "Employees"], ["admins", "Admins"], ["records", "Attendance"], ["leaves", "Work Requests"], ["settings", "Settings"], ["audit", "Audit Log"], ["profile", "My Profile"]]
+    ? [["dashboard", "Dashboard"], ["employees", "Employees"], ["admins", "Admins"], ["records", "Attendance"], ["leaves", "Work Requests"], ["announcements", "Announcements"], ["feedback", "Feedback"], ["settings", "Settings"], ["audit", "Audit Log"], ["about", "About"], ["profile", "My Profile"]]
     : inactiveEmployee
       ? [["dashboard", "Dashboard"], ["history", "Attendance"]]
-      : [["dashboard", "Dashboard"], ["history", "Attendance"], ["leave", "Work Request"], ["profile", "My Profile"]];
+      : [["dashboard", "Dashboard"], ["history", "Attendance"], ["leave", "Work Request"], ["announcements", "Announcements"], ["feedback", "Feedback"], ["about", "About"], ["profile", "My Profile"]];
 
   app.innerHTML = `
     <div class="layout">
@@ -949,6 +1031,9 @@ function title() {
     admins: "Manage Admins",
     records: "Attendance Records",
     leaves: "Work Requests",
+    announcements: "Announcements",
+    feedback: "Feedback",
+    about: "About Us",
     settings: "Company Settings",
     audit: "Audit Log",
     history: "Attendance History",
@@ -963,6 +1048,9 @@ function renderView() {
     if (view === "admins") return renderAdmins();
     if (view === "records") return renderRecords(true);
     if (view === "leaves") return renderLeaveApproval();
+    if (view === "announcements") return renderAnnouncements(true);
+    if (view === "feedback") return renderFeedbackAdmin();
+    if (view === "about") return renderAbout();
     if (view === "settings") return renderSettings();
     if (view === "audit") return renderAudit();
     if (view === "profile") return renderProfile();
@@ -970,6 +1058,9 @@ function renderView() {
   }
   if (view === "history") return renderRecords(false);
   if (view === "leave") return renderLeaveForm();
+  if (view === "announcements") return renderAnnouncements(false);
+  if (view === "feedback") return renderFeedbackForm();
+  if (view === "about") return renderAbout();
   if (view === "profile") return renderProfile();
   return renderEmployeeDashboard();
 }
@@ -982,13 +1073,16 @@ function renderEmployeeDashboard() {
   const inactive = emp.status === "Inactive";
   const multiSession = allowsMultipleSessions(emp);
   const adminUpdates = adminManualUpdates(session.id).slice(0, 5);
+  const scheme = schemeStatus(emp);
   return `
     <div class="metrics">
       <div class="metric"><span>Department</span><strong>${escapeHtml(emp.department)}</strong></div>
       <div class="metric"><span>Today Sessions</span><strong>${todaysRecords().length}</strong></div>
       <div class="metric"><span>Today Worked</span><strong>${totalHoursForDate(session.id, today())}</strong></div>
     </div>
-    <div class="metrics"><div class="metric"><span>Employee Type</span><strong>${escapeHtml(emp.employeeType)}</strong></div><div class="metric"><span>Attendance Mode</span><strong>${escapeHtml(emp.attendanceMode)}</strong></div><div class="metric code-metric"><div class="metric-row"><span>Current Code</span><small class="metric-timer" id="countdown">${secondsLeft()}s</small></div><strong id="liveCode">${currentCode()}</strong></div></div>
+    <div class="metrics"><div class="metric"><span>Employee Type</span><strong>${escapeHtml(emp.employeeType)}</strong></div><div class="metric"><span>Distance From Office</span><strong id="distanceText">${escapeHtml(currentDistanceText)}</strong><button class="btn compact-btn" id="updateDistance" type="button">Update</button></div><div class="metric code-metric"><div class="metric-row"><span>Current Code</span><small class="metric-timer" id="countdown">${secondsLeft()}s</small></div><strong id="liveCode">${currentCode()}</strong></div></div>
+    <section class="panel"><div class="panel-head"><h2>Leave Balance</h2></div>${leaveBalanceTable(session.id)}</section>
+    <section class="panel"><div class="panel-head"><h2>Scheme Status</h2></div><div class="policy-grid"><div><span>Scheme</span><strong>${escapeHtml(emp.scheme || emp.employeeType)}</strong></div><div><span>Monthly Worked</span><strong>${formatMinutes(scheme.worked)}</strong></div><div><span>Target</span><strong>${scheme.targetHours ? `${scheme.targetHours}h ${scheme.targetReached ? "Reached" : "Pending"}` : "Not set"}</strong></div><div><span>OT</span><strong>${scheme.otAfterHours ? `${scheme.otAfterHours}h ${scheme.otReached ? "Reached" : "Not yet"}` : "No OT rule"}</strong></div><div><span>Bonus</span><strong>${scheme.bonusAfterHours ? `${scheme.bonusAfterHours}h ${scheme.bonusReached ? "Reached" : "Not yet"}` : "No bonus rule"}</strong></div></div></section>
     ${inactive ? `<section class="panel notice danger">This account is inactive. You can view and export records only.</section>` : ""}
     <section class="panel">
       <div class="panel-head"><h2>Today Attendance</h2></div>
@@ -1005,7 +1099,7 @@ function renderEmployeeDashboard() {
       </div>
     </section>
     ${adminUpdates.length ? `<section class="panel notice-panel"><div class="panel-head"><h2>Admin Updates ${helpTip("These are attendance records adjusted by admin, such as absence correction, public holiday, approved correction, or missed checkout fix. Check the remark for the reason/proof.")}</h2></div><div class="update-list">${adminUpdates.map((record) => `<div class="update-item"><div><strong>${formatDate(record.date)}</strong><span>${escapeHtml(record.remark || "No remark provided.")}</span></div><span class="${badgeClass(record.status)}">${escapeHtml(record.status)}</span></div>`).join("")}</div></section>` : ""}
-    <section class="panel"><div class="panel-head"><h2>Monthly Calendar</h2><div class="actions"><button class="btn" data-export-calendar="${session.id}">Export Report</button><button class="btn" data-export-timesheet="${session.id}">Export Timesheet</button></div></div>${calendarForEmployee(session.id)}</section>
+    <section class="panel"><div class="panel-head"><h2>Annual Calendar ${new Date().getFullYear()}</h2><div class="actions"><button class="btn" data-export-calendar="${session.id}">Export Report</button><button class="btn" data-export-timesheet="${session.id}">Export Timesheet</button></div></div>${annualCalendarForEmployee(session.id)}</section>
     <section class="panel"><div class="panel-head"><h2>Recent Attendance</h2><button class="btn" data-export-attendance="mine">Export CSV</button></div>${attendanceTable(state.attendance.filter((r) => r.employeeId === session.id).slice(-5).reverse(), false)}</section>
   `;
 }
@@ -1019,11 +1113,13 @@ function adminManualUpdates(employeeId) {
 
 function renderAdminDashboard() {
   const pending = state.leaves.filter((leave) => leave.status === "Pending").length;
+  const feedbackPending = state.feedbacks.filter((item) => item.status !== "Reviewed").length;
   return `
     <div class="metrics">
       <div class="metric"><span>Employees</span><strong>${state.employees.length}</strong></div>
       <div class="metric"><span>Today Attendance</span><strong>${state.attendance.filter((r) => r.date === today()).length}</strong></div>
       <div class="metric"><span>Pending Requests</span><strong>${pending}</strong></div>
+      <div class="metric"><span>New Feedback</span><strong>${feedbackPending}</strong></div>
     </div>
     <section class="panel">
       <div class="panel-head"><div><h2>QR Check-In Display ${helpTip("Open this on a lobby monitor only. Employees scan the rotating QR to check in. The QR changes with the same timer as the manual code.")}</h2><p>Open this on a lobby monitor. QR refreshes every ${state.company.codeInterval}s.</p></div><button class="btn primary" id="openQr">Open QR Display</button></div>
@@ -1056,8 +1152,8 @@ function renderRecords(admin) {
     ? `<section class="search-panel filter-panel">${searchBox(key, "Search selected day records")}<label class="search-field"><span>Employee</span><select class="select-control" id="attendanceEmployee">${state.employees.map((emp) => `<option value="${emp.id}" ${emp.id === selectedAttendanceEmployee ? "selected" : ""}>${escapeHtml(emp.name)} (${escapeHtml(emp.id)})</option>`).join("")}</select></label><label class="search-field"><span>Date</span><input id="attendanceDate" type="date" value="${selectedAttendanceDate}"></label></section>`
     : `<section class="search-panel">${searchBox(key, "Search records")}</section>`;
   const calendar = admin
-    ? `<section class="panel"><div class="panel-head"><h2>Employee Calendar</h2><div class="actions"><select class="select-control" id="calendarEmployee">${state.employees.map((emp) => `<option value="${emp.id}" ${emp.id === selectedCalendarEmployee ? "selected" : ""}>${escapeHtml(emp.name)}</option>`).join("")}</select><button class="btn" data-export-calendar="${selectedCalendarEmployee}">Export Report</button><button class="btn" data-export-timesheet="${selectedCalendarEmployee}">Export Timesheet</button><button class="btn" data-export-calendar="all">Export All</button><button class="btn" data-export-timesheet="all">All Timesheets</button></div></div>${selectedEmp ? calendarForEmployee(selectedEmp.id) : `<p class="empty">No employee selected.</p>`}</section>`
-    : `<section class="panel"><div class="panel-head"><h2>Monthly Calendar</h2><div class="actions"><button class="btn" data-export-calendar="${session.id}">Export Report</button><button class="btn" data-export-timesheet="${session.id}">Export Timesheet</button></div></div>${calendarForEmployee(session.id)}</section>`;
+    ? `<section class="panel"><div class="panel-head"><h2>Employee Annual Calendar</h2><div class="actions"><select class="select-control" id="calendarEmployee">${state.employees.map((emp) => `<option value="${emp.id}" ${emp.id === selectedCalendarEmployee ? "selected" : ""}>${escapeHtml(emp.name)}</option>`).join("")}</select><button class="btn" data-export-calendar="${selectedCalendarEmployee}">Export Report</button><button class="btn" data-export-timesheet="${selectedCalendarEmployee}">Export Timesheet</button><button class="btn" data-export-calendar="all">Export All</button><button class="btn" data-export-timesheet="all">All Timesheets</button></div></div>${selectedEmp ? annualCalendarForEmployee(selectedEmp.id) : `<p class="empty">No employee selected.</p>`}</section>`
+    : `<section class="panel"><div class="panel-head"><h2>Annual Calendar</h2><div class="actions"><button class="btn" data-export-calendar="${session.id}">Export Report</button><button class="btn" data-export-timesheet="${session.id}">Export Timesheet</button></div></div>${annualCalendarForEmployee(session.id)}</section>`;
   return `${attendanceFilters}<section class="panel"><div class="panel-head"><h2>${admin ? `Attendance Records ${helpTip("Choose an employee and date to manage that day. Admin can edit or delete every attendance record with a required remark for audit tracking.")}` : "My Attendance Records"}</h2><div class="actions">${admin ? `<button class="btn primary" id="addManualAttendance">Add Manual Status</button>` : ""}<button class="btn" data-export-attendance="${admin ? "all" : "mine"}">Export CSV</button></div></div>${statusLegend()}${attendanceTable(records.slice().reverse(), admin)}</section>${calendar}`;
 }
 
@@ -1070,11 +1166,11 @@ function attendanceTable(records, admin) {
   return `<div class="table-wrap record-scroll"><table class="responsive-table"><thead><tr>${admin ? "<th>Employee</th>" : ""}<th>Date</th><th>Session</th><th>In</th><th>Out</th><th>Hours</th><th>Status</th><th>Verify</th><th>Remark</th>${admin ? "<th>Updated By</th><th>Action</th>" : ""}</tr></thead><tbody>${records.map((r) => `<tr>${admin ? `<td data-label="Employee">${escapeHtml(employee(r.employeeId)?.name || r.employeeId)}</td>` : ""}<td data-label="Date">${formatDate(r.date)}</td><td data-label="Session">${escapeHtml(sessionLabel(r) || "-")}</td><td data-label="In">${r.checkIn || "-"}</td><td data-label="Out">${r.checkOut || "-"}</td><td data-label="Hours">${r.hours || "-"}</td><td data-label="Status"><span class="${badgeClass(r.status)}">${r.status}</span></td><td data-label="Verify">${escapeHtml(displayVerification(r.verification))}</td><td data-label="Remark">${escapeHtml(r.remark || "-")}</td>${admin ? `<td data-label="Updated By">${escapeHtml(r.updatedBy || "-")}</td><td class="actions" data-label="Action"><button class="btn" data-edit-attendance="${r.id}">Edit</button><button class="btn danger" data-delete-attendance="${r.id}">Delete</button></td>` : ""}</tr>`).join("")}</tbody></table></div>`;
 }
 
-function calendarForEmployee(employeeId) {
-  const dates = monthDates();
+function calendarForEmployee(employeeId, value = new Date()) {
+  const dates = monthDates(value);
   const blanks = new Date(`${dates[0]}T00:00:00`).getDay();
   return `
-    <div class="calendar-month">${monthLabel()}</div>
+    <div class="calendar-month">${monthLabel(value)}</div>
     <div class="calendar-grid">
       ${["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"].map((day) => `<div class="calendar-head">${day}</div>`).join("")}
       ${Array.from({ length: blanks }, () => `<div class="calendar-cell empty-cell"></div>`).join("")}
@@ -1085,6 +1181,13 @@ function calendarForEmployee(employeeId) {
     </div>
     ${calendarMonthSummary(employeeId, dates)}
   `;
+}
+
+function annualCalendarForEmployee(employeeId, year = new Date().getFullYear()) {
+  return `<div class="annual-calendar">${Array.from({ length: 12 }, (_, month) => {
+    const date = new Date(year, month, 1);
+    return `<div class="year-month"><h3>${date.toLocaleDateString("en-GB", { month: "long" })}</h3>${calendarForEmployee(employeeId, date)}</div>`;
+  }).join("")}</div>${calendarMonthSummary(employeeId, yearDates(year))}`;
 }
 
 function calendarMonthSummary(employeeId, dates = monthDates()) {
@@ -1103,6 +1206,7 @@ function renderLeaveForm() {
     .slice().reverse();
   return `
     <section class="search-panel">${searchBox("myRequests", "Search requests")}</section>
+    <section class="panel"><div class="panel-head"><h2>Leave Balance</h2></div>${leaveBalanceTable(session.id)}</section>
     <div class="request-layout">
       <form class="panel form-grid" id="leaveForm">
         <div class="panel-head wide"><h2>Submit Work Request</h2></div>
@@ -1118,11 +1222,47 @@ function renderLeaveForm() {
   `;
 }
 
+function leaveBalanceTable(employeeId) {
+  const year = new Date().getFullYear();
+  const policies = state.company.leavePolicies || [];
+  if (!policies.length) return `<p class="empty">No leave policy configured.</p>`;
+  return `<div class="table-wrap"><table class="responsive-table"><thead><tr><th>Leave Type</th><th>Entitlement</th><th>Used</th><th>Remaining</th><th>Expires</th></tr></thead><tbody>${policies.map((policy) => {
+    const total = Number(policy.days || 0);
+    const used = leaveUsed(employeeId, policy.type, year);
+    return `<tr><td data-label="Leave Type">${escapeHtml(policy.type)}</td><td data-label="Entitlement">${total}</td><td data-label="Used">${used}</td><td data-label="Remaining">${Math.max(0, total - used)}</td><td data-label="Expires">${policy.expires ? `${year}-${policy.expires}` : "Year end"}</td></tr>`;
+  }).join("")}</tbody></table></div>`;
+}
+
 function renderLeaveApproval() {
   const requests = state.leaves
     .filter((leave) => includesSearch([employee(leave.employeeId)?.name, leave.employeeId, leave.type, requestDurationLabel(leave), leave.from, formatDate(leave.from), leave.to, formatDate(leave.to), leave.reason, leave.status], "requestsAll"))
     .slice().reverse();
   return `<section class="search-panel">${searchBox("requestsAll", "Search requests")}</section><section class="panel"><div class="panel-head"><h2>Work Requests ${helpTip("Work Requests include leave, WFH, business trip, medical leave and similar approved absence types. Approved WFH/business trip is treated as an accepted work arrangement, not absence.")}</h2><button class="btn" data-export-requests="all">Export CSV</button></div>${leaveTable(requests, true)}</section>`;
+}
+
+function renderAnnouncements(admin) {
+  const items = state.announcements.slice().sort((a, b) => `${b.date}${b.time}`.localeCompare(`${a.date}${a.time}`));
+  const form = admin ? `<form class="panel form-grid" id="announcementForm"><div class="panel-head wide"><h2>Post Announcement</h2></div><label class="field"><span>Title</span><input id="announcementTitle" required></label><label class="field"><span>Date</span><input id="announcementDate" type="date" value="${today()}" required></label><label class="field"><span>Time</span><input id="announcementTime" type="time" value="${nowTime()}" required></label><label class="field"><span>Public Holiday Action</span><select id="announcementHolidayAction"><option value="">No holiday update</option><option value="add">Add public holiday</option><option value="remove">Cancel public holiday</option></select></label><label class="field"><span>Holiday Date</span><input id="announcementHolidayDate" type="date"></label><label class="field wide"><span>Content</span><textarea id="announcementContent" required></textarea></label><button class="btn primary" type="submit">Publish</button></form>` : "";
+  return `${form}<section class="panel"><div class="panel-head"><h2>Announcements</h2></div><div class="announcement-list">${items.map((item) => `<article class="announcement-item"><div><strong>${escapeHtml(item.title)}</strong><span>${formatDate(item.date)} ${escapeHtml(item.time || "")} | ${escapeHtml(item.author || "Admin")}</span></div><p>${escapeHtml(item.content)}</p>${item.holidayAction ? `<span class="badge status-public-holiday">${item.holidayAction === "add" ? "Public holiday added" : "Public holiday cancelled"} ${item.holidayDate ? formatDate(item.holidayDate) : ""}</span>` : ""}</article>`).join("") || `<p class="empty">No announcements yet.</p>`}</div></section>`;
+}
+
+function renderFeedbackForm() {
+  const mine = state.feedbacks.filter((item) => item.employeeId === session.id).slice().reverse();
+  return `<form class="panel form-grid" id="feedbackForm"><div class="panel-head wide"><h2>Send Feedback</h2></div><label class="field"><span>Title</span><input id="feedbackTitle" required></label><label class="field wide"><span>Message</span><textarea id="feedbackMessage" required></textarea></label><label class="field check-line wide"><input id="feedbackAnonymous" type="checkbox"><span>Send anonymously</span></label><button class="btn primary" type="submit">Submit Feedback</button></form><section class="panel"><div class="panel-head"><h2>My Feedback</h2></div>${feedbackTable(mine, false)}</section>`;
+}
+
+function renderFeedbackAdmin() {
+  const items = state.feedbacks.slice().sort((a, b) => String(b.id).localeCompare(String(a.id)));
+  return `<section class="panel"><div class="panel-head"><h2>Employee Feedback</h2></div>${feedbackTable(items, true)}</section>`;
+}
+
+function feedbackTable(items, admin) {
+  if (!items.length) return `<p class="empty">No feedback yet.</p>`;
+  return `<div class="table-wrap record-scroll"><table class="responsive-table"><thead><tr><th>Date</th>${admin ? "<th>Employee</th>" : ""}<th>Title</th><th>Message</th><th>Status</th>${admin ? "<th>Action</th>" : ""}</tr></thead><tbody>${items.map((item) => `<tr><td data-label="Date">${escapeHtml(item.at)}</td>${admin ? `<td data-label="Employee">${item.anonymous ? "Anonymous" : escapeHtml(employee(item.employeeId)?.name || item.employeeId)}</td>` : ""}<td data-label="Title">${escapeHtml(item.title)}</td><td data-label="Message">${escapeHtml(item.message)}</td><td data-label="Status"><span class="${badgeClass(item.status)}">${escapeHtml(item.status)}</span></td>${admin ? `<td data-label="Action"><button class="btn" data-review-feedback="${item.id}" ${item.status === "Reviewed" ? "disabled" : ""}>Mark Reviewed</button></td>` : ""}</tr>`).join("")}</tbody></table></div>`;
+}
+
+function renderAbout() {
+  return `<section class="panel about-panel"><div class="panel-head"><h2>About Us</h2></div><p>${escapeHtml(state.company.about || seedState.company.about)}</p><div class="policy-grid"><div><span>Company</span><strong>${escapeHtml(state.company.name)}</strong></div><div><span>Office</span><strong>${escapeHtml(state.company.officeName)}</strong></div><div><span>System</span><strong>AttendPro</strong></div></div></section>`;
 }
 
 function leaveTable(leaves, admin) {
@@ -1131,8 +1271,8 @@ function leaveTable(leaves, admin) {
 }
 
 function renderEmployees() {
-  const employees = state.employees.filter((emp) => includesSearch([emp.id, emp.name, emp.email, emp.department, emp.position, emp.employmentDate, emp.employeeType, emp.attendanceMode, emp.phone, emp.status, emp.statusRemark], "employees"));
-  return `<section class="search-panel">${searchBox("employees", "Search employees")}</section><section class="panel"><div class="panel-head"><h2>Employees</h2><div class="actions"><button class="btn" data-export-employees>Export CSV</button><button class="btn primary" id="addEmployee">Add Employee</button></div></div><div class="table-wrap record-scroll"><table class="employees-table"><thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Password</th><th>Type</th><th>Attendance Mode</th><th>Department</th><th>Position</th><th>Joined</th><th>Phone</th><th>Status</th><th>Remark</th><th>Action</th></tr></thead><tbody>${employees.map((emp) => `<tr><td>${emp.id}</td><td>${escapeHtml(emp.name)}</td><td>${escapeHtml(emp.email)}</td><td><code>${escapeHtml(emp.password)}</code></td><td>${escapeHtml(emp.employeeType)}</td><td>${escapeHtml(emp.attendanceMode)}</td><td>${escapeHtml(emp.department)}</td><td>${escapeHtml(emp.position)}</td><td>${emp.employmentDate ? formatDate(emp.employmentDate) : "-"}</td><td>${escapeHtml(emp.phone || "-")}</td><td>${emp.status}</td><td>${escapeHtml(emp.statusRemark || "-")}</td><td><button class="btn" data-edit="${emp.id}">Edit</button></td></tr>`).join("") || `<tr><td colspan="13" class="empty">No employees found.</td></tr>`}</tbody></table></div></section>`;
+  const employees = state.employees.filter((emp) => includesSearch([emp.id, emp.name, emp.email, emp.department, emp.position, emp.employmentDate, emp.employeeType, emp.attendanceMode, emp.scheme, emp.phone, emp.plateNo, emp.status, emp.statusRemark], "employees"));
+  return `<section class="search-panel">${searchBox("employees", "Search employees")}</section><section class="panel"><div class="panel-head"><h2>Employees</h2><div class="actions"><button class="btn" data-export-employees>Export CSV</button><button class="btn primary" id="addEmployee">Add Employee</button></div></div><div class="table-wrap record-scroll"><table class="employees-table"><thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Password</th><th>Type</th><th>Scheme</th><th>Attendance Mode</th><th>Department</th><th>Position</th><th>Joined</th><th>Phone</th><th>Vehicle</th><th>Status</th><th>Remark</th><th>Action</th></tr></thead><tbody>${employees.map((emp) => `<tr><td>${emp.id}</td><td>${escapeHtml(emp.name)}</td><td>${escapeHtml(emp.email)}</td><td><code>${escapeHtml(emp.password)}</code></td><td>${escapeHtml(emp.employeeType)}</td><td>${escapeHtml(emp.scheme || emp.employeeType)}</td><td>${escapeHtml(emp.attendanceMode)}</td><td>${escapeHtml(emp.department)}</td><td>${escapeHtml(emp.position)}</td><td>${emp.employmentDate ? formatDate(emp.employmentDate) : "-"}</td><td>${escapeHtml(emp.phone || "-")}</td><td>${escapeHtml([emp.vehicleType, emp.plateNo].filter(Boolean).join(" ") || "-")}</td><td>${emp.status}</td><td>${escapeHtml(emp.statusRemark || "-")}</td><td><button class="btn" data-edit="${emp.id}">Edit</button></td></tr>`).join("") || `<tr><td colspan="15" class="empty">No employees found.</td></tr>`}</tbody></table></div></section>`;
 }
 
 function renderAdmins() {
@@ -1142,12 +1282,15 @@ function renderAdmins() {
 
 function renderProfile() {
   const account = session.role === "admin" ? state.admins.find((admin) => admin.id === session.id) : employee(session.id);
-  return `<form class="panel form-grid profile-form" id="profileForm" autocomplete="off"><div class="panel-head wide"><h2>My Profile</h2></div><label class="field"><span>${session.role === "admin" ? "Admin Code" : "Name"}</span><input id="profileName" value="${escapeHtml(account.name)}" readonly></label>${session.role === "admin" ? `<label class="field"><span>Internal Person Name</span><input id="profilePersonName" value="${escapeHtml(account.personName || "")}" required></label>` : ""}<label class="field"><span>Email</span><input id="profileEmail" type="email" value="${escapeHtml(account.email)}" required></label>${session.role === "employee" ? `<label class="field"><span>Phone</span><input id="profilePhone" value="${escapeHtml(account.phone || "")}"></label>` : ""}<label class="field"><span>Current Password</span><input id="currentPassword" type="password" value="" autocomplete="new-password" readonly onfocus="this.removeAttribute('readonly')"></label><label class="field"><span>New Password</span><input id="newPassword" type="password" value="" autocomplete="new-password" placeholder="Leave blank to keep"></label><label class="field"><span>Confirm New Password</span><input id="confirmPassword" type="password" value="" autocomplete="new-password" placeholder="Repeat new password"></label><div class="wide actions"><button class="btn primary compact-btn" type="submit">Save Profile</button></div></form>`;
+  const employeeFields = session.role === "employee" ? `<label class="field"><span>Phone</span><input id="profilePhone" value="${escapeHtml(account.phone || "")}"></label><label class="field"><span>ID / Passport No.</span><input id="profileIdNumber" value="${escapeHtml(account.idNumber || "")}"></label><label class="field"><span>Emergency Contact</span><input id="profileEmergency" value="${escapeHtml(account.emergencyContact || "")}"></label><label class="field"><span>Vehicle Type</span><input id="profileVehicleType" value="${escapeHtml(account.vehicleType || "")}"></label><label class="field"><span>Plate No.</span><input id="profilePlate" value="${escapeHtml(account.plateNo || "")}"></label><label class="field wide"><span>Address</span><textarea id="profileAddress">${escapeHtml(account.address || "")}</textarea></label>` : "";
+  return `<form class="panel form-grid profile-form" id="profileForm" autocomplete="off"><div class="panel-head wide"><h2>My Profile</h2></div><label class="field"><span>${session.role === "admin" ? "Admin Code" : "Name"}</span><input id="profileName" value="${escapeHtml(account.name)}" readonly></label>${session.role === "admin" ? `<label class="field"><span>Internal Person Name</span><input id="profilePersonName" value="${escapeHtml(account.personName || "")}" required></label>` : ""}<label class="field"><span>Email</span><input id="profileEmail" type="email" value="${escapeHtml(account.email)}" required></label>${employeeFields}<label class="field"><span>Current Password</span><input id="currentPassword" type="password" value="" autocomplete="new-password" readonly onfocus="this.removeAttribute('readonly')"></label><label class="field"><span>New Password</span><input id="newPassword" type="password" value="" autocomplete="new-password" placeholder="Leave blank to keep"></label><label class="field"><span>Confirm New Password</span><input id="confirmPassword" type="password" value="" autocomplete="new-password" placeholder="Repeat new password"></label><div class="wide actions"><button class="btn primary compact-btn" type="submit">Save Profile</button></div></form>`;
 }
 
 function renderSettings() {
   const days = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"];
   const selected = state.company.workingDays || seedState.company.workingDays;
+  const leavePolicies = state.company.leavePolicies || seedState.company.leavePolicies;
+  const schemeTypes = ["Permanent", "Part-time", "Contract", "Intern"];
   return `
     <form class="panel form-grid settings-form compact-settings" id="settingsForm">
       <div class="panel-head wide">
@@ -1173,6 +1316,12 @@ function renderSettings() {
       <label class="field"><span>Office Longitude</span><input id="officeLongitude" type="number" step="0.000001" value="${state.company.officeLongitude}" required></label>
       <label class="field"><span class="label-row">Allowed Radius (m) ${helpTip("Employees must be inside this GPS radius to check in by QR or manual code. Use a larger radius only if the office GPS is unstable.")}</span><input id="officeRadius" type="number" min="20" max="5000" step="10" value="${state.company.officeRadius}" required></label>
       <label class="field check-line wide"><input id="autoCheckout" type="checkbox" ${state.company.autoCheckout ? "checked" : ""}><span>Auto check-out when employee leaves GPS radius ${helpTip("Works while the employee website is open and location permission remains allowed. Browsers cannot reliably track location after the tab/app is fully closed.")}</span></label>
+      <label class="field wide"><span>About Us</span><textarea id="companyAbout">${escapeHtml(state.company.about || "")}</textarea></label>
+      <div class="field wide settings-block"><span>Leave Entitlement Per Year</span><div class="settings-grid">${leavePolicies.map((policy, index) => `<label class="field"><span>${escapeHtml(policy.type)} Days</span><input class="leave-days" data-leave-index="${index}" type="number" min="0" step="0.5" value="${policy.days}"></label><label class="field"><span>${escapeHtml(policy.type)} Expiry</span><input class="leave-expiry" data-leave-index="${index}" placeholder="MM-DD" value="${escapeHtml(policy.expires || "12-31")}"></label>`).join("")}</div></div>
+      <div class="field wide settings-block"><span>Employee Schemes</span><div class="settings-grid">${schemeTypes.map((type) => {
+        const scheme = state.company.schemes?.[type] || {};
+        return `<label class="field"><span>${type} Target Hours</span><input data-scheme="${type}" data-scheme-field="monthlyTargetHours" type="number" min="0" value="${scheme.monthlyTargetHours || 0}"></label><label class="field"><span>${type} OT After</span><input data-scheme="${type}" data-scheme-field="otAfterHours" type="number" min="0" value="${scheme.otAfterHours || 0}"></label><label class="field"><span>${type} Bonus After</span><input data-scheme="${type}" data-scheme-field="bonusAfterHours" type="number" min="0" value="${scheme.bonusAfterHours || 0}"></label>`;
+      }).join("")}</div></div>
       <div class="field wide">
         <span>Working Days</span>
         <div class="day-grid">
@@ -1203,6 +1352,8 @@ function bindEvents() {
   document.querySelector("#checkOut")?.addEventListener("click", checkOut);
   document.querySelector("#openQr")?.addEventListener("click", openQrDisplay);
   document.querySelector("#leaveForm")?.addEventListener("submit", submitLeave);
+  document.querySelector("#feedbackForm")?.addEventListener("submit", submitFeedback);
+  document.querySelector("#announcementForm")?.addEventListener("submit", submitAnnouncement);
   document.querySelector("#profileForm")?.addEventListener("submit", saveProfile);
   document.querySelector("#settingsForm")?.addEventListener("submit", saveSettings);
   document.querySelector("#useMyLocation")?.addEventListener("click", useMyLocationForOffice);
@@ -1215,6 +1366,7 @@ function bindEvents() {
   document.querySelectorAll("[data-edit-attendance]").forEach((button) => button.addEventListener("click", () => openAttendanceEditModal(button.dataset.editAttendance)));
   document.querySelectorAll("[data-approve]").forEach((button) => button.addEventListener("click", () => updateLeave(button.dataset.approve, "Approved")));
   document.querySelectorAll("[data-reject]").forEach((button) => button.addEventListener("click", () => updateLeave(button.dataset.reject, "Rejected")));
+  document.querySelectorAll("[data-review-feedback]").forEach((button) => button.addEventListener("click", () => reviewFeedback(button.dataset.reviewFeedback)));
   document.querySelectorAll("[data-delete-attendance]").forEach((button) => button.addEventListener("click", () => deleteAttendance(button.dataset.deleteAttendance)));
   document.querySelectorAll("[data-export-attendance]").forEach((button) => button.addEventListener("click", () => exportAttendance(button.dataset.exportAttendance)));
   document.querySelectorAll("[data-export-requests]").forEach((button) => button.addEventListener("click", () => exportRequests(button.dataset.exportRequests)));
@@ -1238,6 +1390,7 @@ function bindEvents() {
     selectedAttendanceDate = event.target.value || today();
     render();
   });
+  document.querySelector("#updateDistance")?.addEventListener("click", updateEmployeeDistance);
 }
 
 function bindPasswordToggles() {
@@ -1457,6 +1610,67 @@ function updateLeave(id, status) {
   toast(`Request ${status.toLowerCase()}.`);
 }
 
+function submitFeedback(event) {
+  event.preventDefault();
+  const item = {
+    id: `FDB${Date.now()}`,
+    employeeId: session.id,
+    anonymous: document.querySelector("#feedbackAnonymous").checked,
+    title: document.querySelector("#feedbackTitle").value.trim(),
+    message: document.querySelector("#feedbackMessage").value.trim(),
+    status: "New",
+    at: new Date().toLocaleString("en-GB", { hour12: false })
+  };
+  if (!item.title || !item.message) return toast("Fill in feedback title and message.");
+  state.feedbacks.unshift(item);
+  addAudit("Feedback submitted", `${item.anonymous ? "Anonymous employee" : session.name} submitted feedback.`);
+  saveState("New feedback submitted.");
+  render();
+  toast("Feedback sent to admins.");
+}
+
+function reviewFeedback(id) {
+  const item = state.feedbacks.find((feedback) => feedback.id === id);
+  if (!item) return toast("Feedback not found.");
+  item.status = "Reviewed";
+  item.reviewedBy = session.name;
+  item.reviewedAt = new Date().toLocaleString("en-GB", { hour12: false });
+  addAudit("Feedback reviewed", `${session.name} reviewed feedback ${item.title}.`);
+  saveState("Feedback reviewed.");
+  render();
+  toast("Feedback marked reviewed.");
+}
+
+function submitAnnouncement(event) {
+  event.preventDefault();
+  const holidayAction = document.querySelector("#announcementHolidayAction").value;
+  const holidayDate = document.querySelector("#announcementHolidayDate").value;
+  if (holidayAction && !holidayDate) return toast("Select holiday date.");
+  const item = {
+    id: `ANN${Date.now()}`,
+    title: document.querySelector("#announcementTitle").value.trim(),
+    content: document.querySelector("#announcementContent").value.trim(),
+    date: document.querySelector("#announcementDate").value,
+    time: document.querySelector("#announcementTime").value,
+    author: session.name,
+    holidayAction,
+    holidayDate
+  };
+  if (!item.title || !item.content) return toast("Fill in announcement title and content.");
+  state.announcements.unshift(item);
+  if (holidayAction === "add") {
+    const exists = state.company.publicHolidays.some((holiday) => holiday.date === holidayDate);
+    if (!exists) state.company.publicHolidays.push({ date: holidayDate, title: item.title });
+  }
+  if (holidayAction === "remove") {
+  state.company.publicHolidays = state.company.publicHolidays.filter((holiday) => holiday.date !== holidayDate);
+  }
+  addAudit("Announcement published", `${session.name} published ${item.title}${holidayAction ? ` and ${holidayAction === "add" ? "added" : "cancelled"} public holiday ${formatDate(holidayDate)}` : ""}.`);
+  saveState("Announcement published.");
+  render();
+  toast("Announcement published.");
+}
+
 function deleteAttendance(id) {
   const record = state.attendance.find((item) => item.id === id);
   if (!record) return toast("Attendance record not found.");
@@ -1538,7 +1752,14 @@ function saveProfile(event) {
   }
   if (session.role === "admin") account.personName = document.querySelector("#profilePersonName").value.trim();
   account.email = email;
-  if (session.role === "employee") account.phone = document.querySelector("#profilePhone").value.trim();
+  if (session.role === "employee") {
+    account.phone = document.querySelector("#profilePhone").value.trim();
+    account.idNumber = document.querySelector("#profileIdNumber").value.trim();
+    account.emergencyContact = document.querySelector("#profileEmergency").value.trim();
+    account.vehicleType = document.querySelector("#profileVehicleType").value.trim();
+    account.plateNo = document.querySelector("#profilePlate").value.trim();
+    account.address = document.querySelector("#profileAddress").value.trim();
+  }
   session.name = account.name;
   session.personName = account.personName || "";
   session.email = email;
@@ -1559,6 +1780,18 @@ function saveSettings(event) {
   state.company.officeLongitude = Number(document.querySelector("#officeLongitude").value);
   state.company.officeRadius = Number(document.querySelector("#officeRadius").value);
   state.company.autoCheckout = document.querySelector("#autoCheckout").checked;
+  state.company.about = document.querySelector("#companyAbout").value.trim();
+  state.company.leavePolicies = (state.company.leavePolicies || seedState.company.leavePolicies).map((policy, index) => ({
+    ...policy,
+    days: Number(document.querySelector(`.leave-days[data-leave-index="${index}"]`).value || 0),
+    expires: document.querySelector(`.leave-expiry[data-leave-index="${index}"]`).value.trim() || "12-31"
+  }));
+  document.querySelectorAll("[data-scheme]").forEach((input) => {
+    const type = input.dataset.scheme;
+    const field = input.dataset.schemeField;
+    state.company.schemes[type] = state.company.schemes[type] || {};
+    state.company.schemes[type][field] = Number(input.value || 0);
+  });
   if (!officeLocationReady()) return toast("Enter a valid office latitude, longitude, and radius.");
   state.company.workingDays = Array.from(document.querySelectorAll("input[name='workingDay']:checked")).map((input) => input.value);
   if (!state.company.workingDays.length) return toast("Select at least one working day.");
@@ -1580,6 +1813,19 @@ async function useMyLocationForOffice() {
   }
 }
 
+async function updateEmployeeDistance() {
+  try {
+    toast("Checking distance...");
+    const position = await getCurrentPosition();
+    const distance = distanceMeters({ lat: position.coords.latitude, lng: position.coords.longitude }, officePoint());
+    currentDistanceText = `${distance}m`;
+    render();
+    toast("Distance updated.");
+  } catch (error) {
+    toast(error.message || "Cannot get current location.");
+  }
+}
+
 function exportAttendance(scope) {
   const records = scope === "all" ? state.attendance : state.attendance.filter((item) => item.employeeId === session.id);
   const rows = records.map((r) => [employee(r.employeeId)?.name || r.employeeId, r.employeeId, r.date, sessionLabel(r), r.checkIn, r.checkOut || "", r.hours || "", r.status, displayVerification(r.verification), r.remark || "", r.updatedBy || "", r.updatedAt || ""]);
@@ -1593,8 +1839,8 @@ function exportRequests(scope) {
 }
 
 function exportEmployees() {
-  const rows = state.employees.map((emp) => [emp.id, emp.name, emp.email, emp.password, emp.employeeType, emp.attendanceMode, emp.department, emp.position, emp.employmentDate || "", emp.phone || "", emp.status, emp.statusRemark || "", emp.statusUpdatedBy || "", emp.statusUpdatedAt || ""]);
-  downloadCSV(`${safeName(`${companyReportName()}-employee-list-${today()}`)}.csv`, ["ID", "Name", "Email", "Password", "Employee Type", "Attendance Mode", "Department", "Position", "Employment Date", "Phone", "Status", "Status Remark", "Updated By", "Updated At"], rows);
+  const rows = state.employees.map((emp) => [emp.id, emp.name, emp.email, emp.password, emp.employeeType, emp.scheme || emp.employeeType, emp.attendanceMode, emp.department, emp.position, emp.employmentDate || "", emp.phone || "", emp.idNumber || "", emp.address || "", emp.emergencyContact || "", emp.vehicleType || "", emp.plateNo || "", emp.status, emp.statusRemark || "", emp.statusUpdatedBy || "", emp.statusUpdatedAt || ""]);
+  downloadCSV(`${safeName(`${companyReportName()}-employee-list-${today()}`)}.csv`, ["ID", "Name", "Email", "Password", "Employee Type", "Scheme", "Attendance Mode", "Department", "Position", "Employment Date", "Phone", "ID Number", "Address", "Emergency Contact", "Vehicle Type", "Plate No", "Status", "Status Remark", "Updated By", "Updated At"], rows);
 }
 
 function exportAudit() {
@@ -1756,12 +2002,13 @@ function saveManualAttendance(event) {
 }
 
 function openEmployeeModal(id) {
-  const emp = employee(id) || { id: `EMP${String(state.employees.length + 1).padStart(3, "0")}`, name: "", email: "", password: "employee123", employeeType: "Permanent", attendanceMode: "Single Daily", department: "", position: "", employmentDate: today(), phone: "", status: "Active", statusRemark: "" };
+  const emp = employee(id) || { id: `EMP${String(state.employees.length + 1).padStart(3, "0")}`, name: "", email: "", password: "employee123", employeeType: "Permanent", scheme: "Permanent", attendanceMode: "Single Daily", department: "", position: "", employmentDate: today(), phone: "", idNumber: "", address: "", emergencyContact: "", vehicleType: "", plateNo: "", status: "Active", statusRemark: "" };
   const modal = document.querySelector("#modal");
-  modal.innerHTML = `<form class="modal" id="employeeForm"><h2>${id ? "Edit" : "Add"} Employee</h2><label class="field"><span>ID</span><input id="empId" value="${emp.id}" ${id ? "readonly" : ""}></label><label class="field"><span>Name</span><input id="empName" value="${escapeHtml(emp.name)}" required></label><label class="field"><span>Email</span><input id="empEmail" type="email" value="${escapeHtml(emp.email)}" required></label><label class="field"><span>Password</span><input id="empPassword" value="${escapeHtml(emp.password)}" required></label><label class="field"><span class="label-row">Employee Type ${helpTip("Permanent is usually full-time long-term staff. Part-time and Contract employees often use multiple sessions so daily total hours can be calculated for payroll.")}</span><select id="empType"><option ${emp.employeeType === "Permanent" ? "selected" : ""}>Permanent</option><option ${emp.employeeType === "Part-time" ? "selected" : ""}>Part-time</option><option ${emp.employeeType === "Contract" ? "selected" : ""}>Contract</option><option ${emp.employeeType === "Intern" ? "selected" : ""}>Intern</option></select></label><label class="field"><span class="label-row">Attendance Mode ${helpTip("Single Daily allows one check-in per day. Multiple Sessions allows repeated check-in/out sessions and totals all hours for that day.")}</span><select id="empAttendanceMode"><option ${emp.attendanceMode === "Single Daily" ? "selected" : ""}>Single Daily</option><option ${emp.attendanceMode === "Multiple Sessions" ? "selected" : ""}>Multiple Sessions</option></select></label><label class="field"><span>Department</span><input id="empDept" value="${escapeHtml(emp.department)}"></label><label class="field"><span>Position</span><input id="empPos" value="${escapeHtml(emp.position)}"></label><label class="field"><span>Employment Date</span><input id="empEmploymentDate" type="date" value="${emp.employmentDate || today()}" required></label><label class="field"><span>Phone</span><input id="empPhone" value="${escapeHtml(emp.phone || "")}"></label><label class="field"><span>Status</span><select id="empStatus"><option ${emp.status === "Active" ? "selected" : ""}>Active</option><option ${emp.status === "Inactive" ? "selected" : ""}>Inactive</option></select></label><label class="field"><span>Status Remark / Proof</span><textarea id="empStatusRemark" placeholder="Required if status is changed">${escapeHtml(emp.statusRemark || "")}</textarea></label><div class="modal-actions"><button class="btn primary" type="submit">Save</button><button class="btn" type="button" id="closeModal">Cancel</button></div></form>`;
+  modal.innerHTML = `<form class="modal" id="employeeForm"><h2>${id ? "Edit" : "Add"} Employee</h2><label class="field"><span>ID</span><input id="empId" value="${emp.id}" ${id ? "readonly" : ""}></label><label class="field"><span>Name</span><input id="empName" value="${escapeHtml(emp.name)}" required></label><label class="field"><span>Email</span><input id="empEmail" type="email" value="${escapeHtml(emp.email)}" required></label><label class="field"><span>Password</span><input id="empPassword" value="${escapeHtml(emp.password)}" required></label><label class="field"><span class="label-row">Employee Type ${helpTip("Permanent is usually full-time long-term staff. Part-time and Contract employees often use multiple sessions so daily total hours can be calculated for payroll.")}</span><select id="empType"><option ${emp.employeeType === "Permanent" ? "selected" : ""}>Permanent</option><option ${emp.employeeType === "Part-time" ? "selected" : ""}>Part-time</option><option ${emp.employeeType === "Contract" ? "selected" : ""}>Contract</option><option ${emp.employeeType === "Intern" ? "selected" : ""}>Intern</option></select></label><label class="field"><span>Scheme</span><select id="empScheme">${["Permanent", "Part-time", "Contract", "Intern"].map((type) => `<option ${((emp.scheme || emp.employeeType) === type) ? "selected" : ""}>${type}</option>`).join("")}</select></label><label class="field"><span class="label-row">Attendance Mode ${helpTip("Single Daily allows one check-in per day. Multiple Sessions allows repeated check-in/out sessions and totals all hours for that day.")}</span><select id="empAttendanceMode"><option ${emp.attendanceMode === "Single Daily" ? "selected" : ""}>Single Daily</option><option ${emp.attendanceMode === "Multiple Sessions" ? "selected" : ""}>Multiple Sessions</option></select></label><label class="field"><span>Department</span><input id="empDept" value="${escapeHtml(emp.department)}"></label><label class="field"><span>Position</span><input id="empPos" value="${escapeHtml(emp.position)}"></label><label class="field"><span>Employment Date</span><input id="empEmploymentDate" type="date" value="${emp.employmentDate || today()}" required></label><label class="field"><span>Phone</span><input id="empPhone" value="${escapeHtml(emp.phone || "")}"></label><label class="field"><span>ID / Passport No.</span><input id="empIdNumber" value="${escapeHtml(emp.idNumber || "")}"></label><label class="field"><span>Emergency Contact</span><input id="empEmergency" value="${escapeHtml(emp.emergencyContact || "")}"></label><label class="field"><span>Vehicle Type</span><input id="empVehicleType" value="${escapeHtml(emp.vehicleType || "")}" placeholder="Car / Motorcycle / None"></label><label class="field"><span>Plate No.</span><input id="empPlate" value="${escapeHtml(emp.plateNo || "")}"></label><label class="field wide"><span>Address</span><textarea id="empAddress">${escapeHtml(emp.address || "")}</textarea></label><label class="field"><span>Status</span><select id="empStatus"><option ${emp.status === "Active" ? "selected" : ""}>Active</option><option ${emp.status === "Inactive" ? "selected" : ""}>Inactive</option></select></label><label class="field"><span>Status Remark / Proof</span><textarea id="empStatusRemark" placeholder="Required if status is changed">${escapeHtml(emp.statusRemark || "")}</textarea></label><div class="modal-actions"><button class="btn primary" type="submit">Save</button><button class="btn" type="button" id="closeModal">Cancel</button></div></form>`;
   modal.classList.add("show");
   document.querySelector("#closeModal").addEventListener("click", closeModal);
   document.querySelector("#empType").addEventListener("change", (event) => {
+    document.querySelector("#empScheme").value = event.target.value;
     if (["Part-time", "Contract"].includes(event.target.value)) document.querySelector("#empAttendanceMode").value = "Multiple Sessions";
   });
   document.querySelector("#employeeForm").addEventListener("submit", (event) => {
@@ -1770,7 +2017,7 @@ function openEmployeeModal(id) {
     const statusRemark = document.querySelector("#empStatusRemark").value.trim();
     const nextStatus = document.querySelector("#empStatus").value;
     if (previous && previous.status !== nextStatus && !statusRemark) return toast("Status change requires a remark/proof.");
-    const payload = { id: document.querySelector("#empId").value.trim(), name: document.querySelector("#empName").value.trim(), email: document.querySelector("#empEmail").value.trim(), password: document.querySelector("#empPassword").value.trim() || "employee123", employeeType: document.querySelector("#empType").value, attendanceMode: document.querySelector("#empAttendanceMode").value, department: document.querySelector("#empDept").value.trim(), position: document.querySelector("#empPos").value.trim(), employmentDate: document.querySelector("#empEmploymentDate").value, phone: document.querySelector("#empPhone").value.trim(), status: nextStatus, statusRemark, statusUpdatedAt: previous && previous.status !== nextStatus ? new Date().toLocaleString("en-GB", { hour12: false }) : emp.statusUpdatedAt || "", statusUpdatedBy: previous && previous.status !== nextStatus ? session.name : emp.statusUpdatedBy || "" };
+    const payload = { id: document.querySelector("#empId").value.trim(), name: document.querySelector("#empName").value.trim(), email: document.querySelector("#empEmail").value.trim(), password: document.querySelector("#empPassword").value.trim() || "employee123", employeeType: document.querySelector("#empType").value, scheme: document.querySelector("#empScheme").value, attendanceMode: document.querySelector("#empAttendanceMode").value, department: document.querySelector("#empDept").value.trim(), position: document.querySelector("#empPos").value.trim(), employmentDate: document.querySelector("#empEmploymentDate").value, phone: document.querySelector("#empPhone").value.trim(), idNumber: document.querySelector("#empIdNumber").value.trim(), emergencyContact: document.querySelector("#empEmergency").value.trim(), vehicleType: document.querySelector("#empVehicleType").value.trim(), plateNo: document.querySelector("#empPlate").value.trim(), address: document.querySelector("#empAddress").value.trim(), status: nextStatus, statusRemark, statusUpdatedAt: previous && previous.status !== nextStatus ? new Date().toLocaleString("en-GB", { hour12: false }) : emp.statusUpdatedAt || "", statusUpdatedBy: previous && previous.status !== nextStatus ? session.name : emp.statusUpdatedBy || "" };
     if (!payload.id || !payload.name || !payload.email) return toast("Fill in employee ID, name, and email.");
     if (payload.password.length < 8) return toast("Employee password must be at least 8 characters.");
     const duplicateEmployeeId = state.employees.some((item) => item.id === payload.id && item.id !== id);
