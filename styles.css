@@ -46,6 +46,12 @@ button { border: 0; cursor: pointer; }
 .sidebar nav { display: grid; gap: 6px; }
 .sidebar nav button { min-height: 36px; padding: 0 10px; border-radius: var(--radius); text-align: left; color: rgba(255,255,255,0.72); background: transparent; font-weight: 750; }
 .sidebar nav button.active, .sidebar nav button:hover { color: white; background: rgba(255,255,255,0.12); }
+.main-nav { flex: 1; align-content: start; }
+.bottom-nav {
+  margin-top: auto;
+  padding-top: 12px;
+  border-top: 1px solid rgba(255,255,255,0.1);
+}
 .user-card { padding: 12px; border-radius: var(--radius); background: rgba(255,255,255,0.1); }
 .user-card span { display: block; margin-top: 3px; color: rgba(255,255,255,0.65); text-transform: capitalize; }
 

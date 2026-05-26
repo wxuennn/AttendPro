@@ -989,17 +989,18 @@ function renderApp() {
   const isAdmin = session.role === "admin";
   const inactiveEmployee = session.role === "employee" && !isActiveEmployee();
   const nav = isAdmin
-    ? [["dashboard", "Dashboard"], ["employees", "Employees"], ["admins", "Admins"], ["records", "Attendance"], ["leaves", "Work Requests"], ["announcements", "Announcements"], ["feedback", "Feedback"], ["settings", "Settings"], ["audit", "Audit Log"], ["about", "About"], ["profile", "My Profile"]]
+    ? [["dashboard", "Dashboard"], ["employees", "Employees"], ["admins", "Admins"], ["records", "Attendance"], ["leaves", "Work Requests"], ["announcements", "Announcements"], ["feedback", "Feedback"], ["settings", "Settings"], ["audit", "Audit Log"], ["profile", "My Profile"]]
     : inactiveEmployee
       ? [["dashboard", "Dashboard"], ["history", "Attendance"]]
-      : [["dashboard", "Dashboard"], ["history", "Attendance"], ["leave", "Work Request"], ["announcements", "Announcements"], ["feedback", "Feedback"], ["about", "About"], ["profile", "My Profile"]];
+      : [["dashboard", "Dashboard"], ["history", "Attendance"], ["leave", "Work Request"], ["announcements", "Announcements"], ["feedback", "Feedback"], ["profile", "My Profile"]];
 
   app.innerHTML = `
     <div class="layout">
       <aside class="sidebar">
         <div class="brand-lockup"><span class="brand-mark">AP</span><span>${escapeHtml(state.company.name)}</span></div>
         <div class="user-card"><strong>${escapeHtml(session.name)}</strong><span>${session.role}</span></div>
-        <nav>${nav.map(([key, label]) => `<button data-view="${key}" class="${view === key ? "active" : ""}">${label}</button>`).join("")}</nav>
+        <nav class="main-nav">${nav.map(([key, label]) => `<button data-view="${key}" class="${view === key ? "active" : ""}">${label}</button>`).join("")}</nav>
+        <nav class="bottom-nav"><button data-view="about" class="${view === "about" ? "active" : ""}">About Us</button></nav>
       </aside>
       <main>
         <header class="topbar">
@@ -1262,7 +1263,7 @@ function feedbackTable(items, admin) {
 }
 
 function renderAbout() {
-  return `<section class="panel about-panel"><div class="panel-head"><h2>About Us</h2></div><p>${escapeHtml(state.company.about || seedState.company.about)}</p><div class="policy-grid"><div><span>Company</span><strong>${escapeHtml(state.company.name)}</strong></div><div><span>Office</span><strong>${escapeHtml(state.company.officeName)}</strong></div><div><span>System</span><strong>AttendPro</strong></div></div></section>`;
+  return `<section class="panel about-panel"><div class="panel-head"><h2>About AttendPro</h2></div><p>AttendPro is a professional employee attendance management system built for shared company use across desktop and mobile devices. It supports GPS verified check-in, rotating QR/code attendance, leave and work requests, annual calendars, HR schemes, announcements, feedback, audit logs, and live Firebase data sync.</p><div class="policy-grid"><div><span>System Type</span><strong>Employee Attendance System</strong></div><div><span>Access</span><strong>Admin and Employee Portals</strong></div><div><span>Sync</span><strong>Live Shared Dataset</strong></div><div><span>Model</span><strong>Agile Development</strong></div></div></section>`;
 }
 
 function leaveTable(leaves, admin) {
@@ -1316,7 +1317,6 @@ function renderSettings() {
       <label class="field"><span>Office Longitude</span><input id="officeLongitude" type="number" step="0.000001" value="${state.company.officeLongitude}" required></label>
       <label class="field"><span class="label-row">Allowed Radius (m) ${helpTip("Employees must be inside this GPS radius to check in by QR or manual code. Use a larger radius only if the office GPS is unstable.")}</span><input id="officeRadius" type="number" min="20" max="5000" step="10" value="${state.company.officeRadius}" required></label>
       <label class="field check-line wide"><input id="autoCheckout" type="checkbox" ${state.company.autoCheckout ? "checked" : ""}><span>Auto check-out when employee leaves GPS radius ${helpTip("Works while the employee website is open and location permission remains allowed. Browsers cannot reliably track location after the tab/app is fully closed.")}</span></label>
-      <label class="field wide"><span>About Us</span><textarea id="companyAbout">${escapeHtml(state.company.about || "")}</textarea></label>
       <div class="field wide settings-block"><span>Leave Entitlement Per Year</span><div class="settings-grid">${leavePolicies.map((policy, index) => `<label class="field"><span>${escapeHtml(policy.type)} Days</span><input class="leave-days" data-leave-index="${index}" type="number" min="0" step="0.5" value="${policy.days}"></label><label class="field"><span>${escapeHtml(policy.type)} Expiry</span><input class="leave-expiry" data-leave-index="${index}" placeholder="MM-DD" value="${escapeHtml(policy.expires || "12-31")}"></label>`).join("")}</div></div>
       <div class="field wide settings-block"><span>Employee Schemes</span><div class="settings-grid">${schemeTypes.map((type) => {
         const scheme = state.company.schemes?.[type] || {};
@@ -1780,7 +1780,6 @@ function saveSettings(event) {
   state.company.officeLongitude = Number(document.querySelector("#officeLongitude").value);
   state.company.officeRadius = Number(document.querySelector("#officeRadius").value);
   state.company.autoCheckout = document.querySelector("#autoCheckout").checked;
-  state.company.about = document.querySelector("#companyAbout").value.trim();
   state.company.leavePolicies = (state.company.leavePolicies || seedState.company.leavePolicies).map((policy, index) => ({
     ...policy,
     days: Number(document.querySelector(`.leave-days[data-leave-index="${index}"]`).value || 0),
