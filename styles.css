@@ -461,41 +461,19 @@ main { min-width: 0; }
 .dataset-card small { color: var(--muted); }
 
 .calendar-list { display: grid; gap: 18px; }
-.annual-calendar {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
-  gap: 14px;
-}
-.year-month {
-  min-width: 0;
-  padding: 10px;
+.calendar-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding: 12px;
   border: 1px solid var(--line-soft);
   border-radius: var(--radius);
   background: var(--surface-3);
 }
-.year-month h3 {
-  margin: 0 0 8px;
-  font-size: 0.9rem;
-}
-.year-month .calendar-month {
-  display: none;
-}
-.year-month .calendar-grid {
-  grid-template-columns: repeat(7, minmax(0, 1fr));
-}
-.year-month .calendar-cell {
-  min-height: 44px;
-  padding: 4px;
-}
-.year-month .calendar-cell span {
-  display: -webkit-box;
-  overflow: hidden;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
-  font-size: 0.55rem;
-}
-.year-month .calendar-summary {
-  display: none;
+.calendar-toolbar .search-field {
+  min-width: min(190px, 100%);
 }
 .calendar-list h3 { margin: 0 0 10px; font-size: 0.98rem; }
 .calendar-month {

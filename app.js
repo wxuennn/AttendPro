@@ -53,6 +53,8 @@ let serverReady = false;
 let lastStateText = JSON.stringify(state);
 let pendingQr = new URLSearchParams(location.search).get("qrCheckIn");
 let selectedCalendarEmployee = "";
+let selectedCalendarYear = new Date().getFullYear();
+let selectedCalendarMonth = new Date().getMonth();
 let selectedAttendanceEmployee = "";
 let selectedAttendanceDate = today();
 let attendanceBusy = false;
@@ -632,14 +634,6 @@ function monthDates(value = new Date()) {
   });
 }
 
-function yearDates(year = new Date().getFullYear()) {
-  const dates = [];
-  for (let month = 0; month < 12; month += 1) {
-    dates.push(...monthDates(new Date(year, month, 1)));
-  }
-  return dates;
-}
-
 function dateRange(from, to) {
   const start = new Date(`${from}T00:00:00`);
   const end = new Date(`${to}T00:00:00`);
@@ -1100,7 +1094,7 @@ function renderEmployeeDashboard() {
       </div>
     </section>
     ${adminUpdates.length ? `<section class="panel notice-panel"><div class="panel-head"><h2>Admin Updates ${helpTip("These are attendance records adjusted by admin, such as absence correction, public holiday, approved correction, or missed checkout fix. Check the remark for the reason/proof.")}</h2></div><div class="update-list">${adminUpdates.map((record) => `<div class="update-item"><div><strong>${formatDate(record.date)}</strong><span>${escapeHtml(record.remark || "No remark provided.")}</span></div><span class="${badgeClass(record.status)}">${escapeHtml(record.status)}</span></div>`).join("")}</div></section>` : ""}
-    <section class="panel"><div class="panel-head"><h2>Annual Calendar ${new Date().getFullYear()}</h2><div class="actions"><button class="btn" data-export-calendar="${session.id}">Export Report</button><button class="btn" data-export-timesheet="${session.id}">Export Timesheet</button></div></div>${annualCalendarForEmployee(session.id)}</section>
+    <section class="panel"><div class="panel-head"><h2>Attendance Calendar</h2></div>${calendarPanel(session.id, false)}</section>
     <section class="panel"><div class="panel-head"><h2>Recent Attendance</h2><button class="btn" data-export-attendance="mine">Export CSV</button></div>${attendanceTable(state.attendance.filter((r) => r.employeeId === session.id).slice(-5).reverse(), false)}</section>
   `;
 }
@@ -1153,8 +1147,8 @@ function renderRecords(admin) {
     ? `<section class="search-panel filter-panel">${searchBox(key, "Search selected day records")}<label class="search-field"><span>Employee</span><select class="select-control" id="attendanceEmployee">${state.employees.map((emp) => `<option value="${emp.id}" ${emp.id === selectedAttendanceEmployee ? "selected" : ""}>${escapeHtml(emp.name)} (${escapeHtml(emp.id)})</option>`).join("")}</select></label><label class="search-field"><span>Date</span><input id="attendanceDate" type="date" value="${selectedAttendanceDate}"></label></section>`
     : `<section class="search-panel">${searchBox(key, "Search records")}</section>`;
   const calendar = admin
-    ? `<section class="panel"><div class="panel-head"><h2>Employee Annual Calendar</h2><div class="actions"><select class="select-control" id="calendarEmployee">${state.employees.map((emp) => `<option value="${emp.id}" ${emp.id === selectedCalendarEmployee ? "selected" : ""}>${escapeHtml(emp.name)}</option>`).join("")}</select><button class="btn" data-export-calendar="${selectedCalendarEmployee}">Export Report</button><button class="btn" data-export-timesheet="${selectedCalendarEmployee}">Export Timesheet</button><button class="btn" data-export-calendar="all">Export All</button><button class="btn" data-export-timesheet="all">All Timesheets</button></div></div>${selectedEmp ? annualCalendarForEmployee(selectedEmp.id) : `<p class="empty">No employee selected.</p>`}</section>`
-    : `<section class="panel"><div class="panel-head"><h2>Annual Calendar</h2><div class="actions"><button class="btn" data-export-calendar="${session.id}">Export Report</button><button class="btn" data-export-timesheet="${session.id}">Export Timesheet</button></div></div>${annualCalendarForEmployee(session.id)}</section>`;
+    ? `<section class="panel"><div class="panel-head"><h2>Employee Calendar</h2></div>${selectedEmp ? calendarPanel(selectedEmp.id, true) : `<p class="empty">No employee selected.</p>`}</section>`
+    : `<section class="panel"><div class="panel-head"><h2>Attendance Calendar</h2></div>${calendarPanel(session.id, false)}</section>`;
   return `${attendanceFilters}<section class="panel"><div class="panel-head"><h2>${admin ? `Attendance Records ${helpTip("Choose an employee and date to manage that day. Admin can edit or delete every attendance record with a required remark for audit tracking.")}` : "My Attendance Records"}</h2><div class="actions">${admin ? `<button class="btn primary" id="addManualAttendance">Add Manual Status</button>` : ""}<button class="btn" data-export-attendance="${admin ? "all" : "mine"}">Export CSV</button></div></div>${statusLegend()}${attendanceTable(records.slice().reverse(), admin)}</section>${calendar}`;
 }
 
@@ -1184,11 +1178,30 @@ function calendarForEmployee(employeeId, value = new Date()) {
   `;
 }
 
-function annualCalendarForEmployee(employeeId, year = new Date().getFullYear()) {
-  return `<div class="annual-calendar">${Array.from({ length: 12 }, (_, month) => {
-    const date = new Date(year, month, 1);
-    return `<div class="year-month"><h3>${date.toLocaleDateString("en-GB", { month: "long" })}</h3>${calendarForEmployee(employeeId, date)}</div>`;
-  }).join("")}</div>${calendarMonthSummary(employeeId, yearDates(year))}`;
+function calendarPeriodDate() {
+  return new Date(selectedCalendarYear, selectedCalendarMonth, 1);
+}
+
+function calendarYearOptions(employeeId) {
+  const start = employmentDate(employeeId);
+  const startYear = start ? new Date(`${start}T00:00:00`).getFullYear() : new Date().getFullYear();
+  const currentYear = new Date().getFullYear();
+  return Array.from({ length: Math.max(1, currentYear - startYear + 1) }, (_, index) => startYear + index);
+}
+
+function normalizeCalendarPeriod(employeeId) {
+  const years = calendarYearOptions(employeeId);
+  if (!years.includes(Number(selectedCalendarYear))) selectedCalendarYear = years.at(-1);
+  selectedCalendarMonth = Math.max(0, Math.min(11, Number(selectedCalendarMonth)));
+}
+
+function calendarPanel(employeeId, admin = false) {
+  if (!employeeId) return `<p class="empty">No employee selected.</p>`;
+  normalizeCalendarPeriod(employeeId);
+  const years = calendarYearOptions(employeeId);
+  const date = calendarPeriodDate();
+  const months = Array.from({ length: 12 }, (_, index) => new Date(2026, index, 1).toLocaleDateString("en-GB", { month: "long" }));
+  return `<div class="calendar-toolbar">${admin ? `<label class="search-field"><span>Employee</span><select class="select-control" id="calendarEmployee">${state.employees.map((emp) => `<option value="${emp.id}" ${emp.id === employeeId ? "selected" : ""}>${escapeHtml(emp.name)}</option>`).join("")}</select></label>` : ""}<label class="search-field"><span>Year</span><select class="select-control" id="calendarYear">${years.map((year) => `<option value="${year}" ${year === selectedCalendarYear ? "selected" : ""}>${year}</option>`).join("")}</select></label><label class="search-field"><span>Month</span><select class="select-control" id="calendarMonth">${months.map((month, index) => `<option value="${index}" ${index === selectedCalendarMonth ? "selected" : ""}>${month}</option>`).join("")}</select></label><button class="btn" data-export-calendar="${employeeId}">Export Report</button><button class="btn" data-export-timesheet="${employeeId}">Export Timesheet</button>${admin ? `<button class="btn" data-export-calendar="all">Export All</button><button class="btn" data-export-timesheet="all">All Timesheets</button>` : ""}</div>${calendarForEmployee(employeeId, date)}`;
 }
 
 function calendarMonthSummary(employeeId, dates = monthDates()) {
@@ -1380,6 +1393,15 @@ function bindEvents() {
   }));
   document.querySelector("#calendarEmployee")?.addEventListener("change", (event) => {
     selectedCalendarEmployee = event.target.value;
+    normalizeCalendarPeriod(selectedCalendarEmployee);
+    render();
+  });
+  document.querySelector("#calendarYear")?.addEventListener("change", (event) => {
+    selectedCalendarYear = Number(event.target.value);
+    render();
+  });
+  document.querySelector("#calendarMonth")?.addEventListener("change", (event) => {
+    selectedCalendarMonth = Number(event.target.value);
     render();
   });
   document.querySelector("#attendanceEmployee")?.addEventListener("change", (event) => {
@@ -1850,16 +1872,17 @@ function exportAudit() {
 function exportCalendar(target) {
   const employees = target === "all" ? state.employees : [employee(target || session.id)].filter(Boolean);
   if (!employees.length) return toast("No employee selected for calendar export.");
-  const title = target === "all" ? `All Employees Attendance Calendar - ${monthLabel()}` : `${employees[0].name} Attendance Calendar - ${monthLabel()}`;
+  const reportDate = calendarPeriodDate();
+  const title = target === "all" ? `All Employees Attendance Calendar - ${monthLabel(reportDate)}` : `${employees[0].name} Attendance Calendar - ${monthLabel(reportDate)}`;
   const sections = employees.map((emp) => `
     <section class="employee-section">
       <h2>${escapeHtml(emp.name)}</h2>
       <p>${escapeHtml(emp.department || "-")} | ${escapeHtml(emp.position || "-")} | ${escapeHtml(emp.id)} | Joined: ${emp.employmentDate ? formatDate(emp.employmentDate) : "-"}</p>
-      ${calendarForEmployee(emp.id)}
+      ${calendarForEmployee(emp.id, reportDate)}
       <table>
         <thead><tr><th>Date</th><th>Working Day</th><th>Status</th><th>Sessions</th><th>Total Hours</th><th>Check In</th><th>Check Out</th></tr></thead>
         <tbody>
-          ${monthDates().map((dateValue) => {
+          ${monthDates(reportDate).map((dateValue) => {
             const records = attendanceForDate(emp.id, dateValue);
             const status = calendarStatus(emp.id, dateValue);
             const checkedRecords = records.filter((record) => record.checkIn);
@@ -1887,14 +1910,15 @@ function exportCalendar(target) {
     .calendar-summary span{display:block;color:#65747c;font-size:11px;font-weight:700;text-transform:uppercase}.calendar-summary strong{display:block;margin-top:4px;font-size:16px}
     table{width:100%;border-collapse:collapse;margin-top:8px}th,td{border-bottom:1px solid #d9e4e8;text-align:left;padding:9px;font-size:13px}th{color:#65747c;text-transform:uppercase;font-size:11px}
   </style></head><body><header><h1>${escapeHtml(title)}</h1><div class="meta">Company: ${escapeHtml(companyReportName())} | Dataset: ${escapeHtml(companyKey)} | Generated: ${new Date().toLocaleString("en-GB")}</div></header>${sections}</body></html>`;
-  const fileBase = target === "all" ? `${companyReportName()}-calendar-report-${monthLabel()}` : `${companyReportName()}-${employees[0].name}-calendar-report-${monthLabel()}`;
+  const fileBase = target === "all" ? `${companyReportName()}-calendar-report-${monthLabel(reportDate)}` : `${companyReportName()}-${employees[0].name}-calendar-report-${monthLabel(reportDate)}`;
   downloadHTML(`${safeName(fileBase)}.html`, html);
 }
 
 function exportTimesheet(target) {
   const employees = target === "all" ? state.employees : [employee(target || session.id)].filter(Boolean);
   if (!employees.length) return toast("No employee selected for timesheet export.");
-  const dates = monthDates();
+  const reportDate = calendarPeriodDate();
+  const dates = monthDates(reportDate);
   const rows = [];
   employees.forEach((emp) => {
     dates.forEach((dateValue) => {
@@ -1917,7 +1941,7 @@ function exportTimesheet(target) {
       ]);
     });
   });
-  const fileBase = target === "all" ? `${companyReportName()}-monthly-timesheets-${monthLabel()}` : `${companyReportName()}-${employees[0].name}-timesheet-${monthLabel()}`;
+  const fileBase = target === "all" ? `${companyReportName()}-monthly-timesheets-${monthLabel(reportDate)}` : `${companyReportName()}-${employees[0].name}-timesheet-${monthLabel(reportDate)}`;
   downloadCSV(`${safeName(fileBase)}.csv`, ["Employee", "Employee ID", "Employee Type", "Attendance Mode", "Date", "Formatted Date", "Sessions", "Total Hours", "Session Labels", "Check Ins", "Check Outs", "Status", "Remarks"], rows);
 }
 
