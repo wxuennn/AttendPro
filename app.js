@@ -1,7 +1,7 @@
 const STORAGE_KEY = "attendpro-state-v2";
 const COMPANY_KEY_STORAGE = "attendpro-company-key";
 const DATASET_PASSWORD_STORAGE = "attendpro-dataset-password";
-const APP_VERSION = "20260526-notification-polish";
+const APP_VERSION = "20260526-professional-qa";
 const APP_VERSION_STORAGE = "attendpro-app-version";
 const TAB_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const channel = "BroadcastChannel" in window ? new BroadcastChannel("attendpro-sync") : null;
@@ -169,8 +169,18 @@ function normalize(input) {
       vehicleType: emp.vehicleType || "",
       plateNo: emp.plateNo || ""
     })),
-    attendance: input.attendance || [],
-    leaves: input.leaves || [],
+    attendance: (input.attendance || []).map((record) => ({
+      ...record,
+      employeeSeen: record.employeeSeen ?? (record.verification !== "Admin manual update")
+    })),
+    leaves: (input.leaves || []).map((request) => ({
+      ...request,
+      duration: request.duration || "Full Day",
+      employeeSeen: request.employeeSeen ?? (request.status === "Pending"),
+      reviewedBy: request.reviewedBy || "",
+      reviewedAt: request.reviewedAt || "",
+      submittedAt: request.submittedAt || ""
+    })),
     announcements: (input.announcements || []).map((item) => ({ ...item, readBy: item.readBy || [] })),
     feedbacks: (input.feedbacks || []).map((item) => ({ ...item, status: item.status || "New" })),
     auditLogs: input.auditLogs || [],
@@ -636,13 +646,22 @@ function requestCalendarLabel(request) {
 }
 
 function leaveUnits(request) {
-  return requestDurationLabel(request).startsWith("Half Day") ? 0.5 : dateRange(request.from, request.to).length;
+  if (requestDurationLabel(request).startsWith("Half Day")) return 0.5;
+  return dateRange(request.from, request.to)
+    .filter((dateValue) => isWorkingDay(dateValue) && !isPublicHoliday(dateValue))
+    .length;
 }
 
 function leaveUsed(employeeId, type, year = new Date().getFullYear()) {
   return state.leaves
-    .filter((leave) => leave.employeeId === employeeId && leave.type === type && leave.status === "Approved" && new Date(`${leave.from}T00:00:00`).getFullYear() === year)
-    .reduce((sum, leave) => sum + leaveUnits(leave), 0);
+    .filter((leave) => leave.employeeId === employeeId && leave.type === type && leave.status === "Approved")
+    .reduce((sum, leave) => {
+      if (requestDurationLabel(leave).startsWith("Half Day")) {
+        return sum + (new Date(`${leave.from}T00:00:00`).getFullYear() === year ? 0.5 : 0);
+      }
+      const daysInYear = dateRange(leave.from, leave.to).filter((dateValue) => new Date(`${dateValue}T00:00:00`).getFullYear() === year);
+      return sum + daysInYear.filter((dateValue) => isWorkingDay(dateValue) && !isPublicHoliday(dateValue)).length;
+    }, 0);
 }
 
 function monthlyWorkedMinutes(employeeId, date = new Date()) {
@@ -968,7 +987,7 @@ function handleGeofencePosition(position) {
   record.hours = duration(record.checkIn, record.checkOut);
   record.status = record.status === "Late" || record.status === "Off-day Work" ? record.status : "Present";
   record.remark = [record.remark, `Auto check-out: left office range (${distance}m from office).`].filter(Boolean).join(" | ");
-  record.verification = `${displayVerification(record.verification)} + GPS auto checkout`;
+  record.checkOutVerification = `Auto geofence (${distance}m)`;
   record.updatedBy = "System";
   record.updatedAt = new Date().toLocaleString("en-GB", { hour12: false });
   addAudit("Auto check-out", `${session.name} was checked out automatically after leaving office range (${distance}m).`);
@@ -1249,7 +1268,7 @@ function renderRecords(admin) {
 
 function attendanceTable(records, admin) {
   if (!records.length) return `<p class="empty">No records yet.</p>`;
-  return `<div class="table-wrap record-scroll"><table class="responsive-table"><thead><tr>${admin ? "<th>Employee</th>" : ""}<th>Date</th><th>Session</th><th>In</th><th>Out</th><th>Hours</th><th>Status</th><th>Verify</th><th>Remark</th>${admin ? "<th>Updated By</th><th>Action</th>" : ""}</tr></thead><tbody>${records.map((r) => `<tr>${admin ? `<td data-label="Employee">${escapeHtml(employee(r.employeeId)?.name || r.employeeId)}</td>` : ""}<td data-label="Date">${formatDate(r.date)}</td><td data-label="Session">${escapeHtml(sessionLabel(r) || "-")}</td><td data-label="In">${r.checkIn || "-"}</td><td data-label="Out">${r.checkOut || "-"}</td><td data-label="Hours">${r.hours || "-"}</td><td data-label="Status"><span class="${badgeClass(r.status)}">${r.status}</span></td><td data-label="Verify">${escapeHtml(displayVerification(r.verification))}</td><td data-label="Remark">${escapeHtml(r.remark || "-")}</td>${admin ? `<td data-label="Updated By">${escapeHtml(r.updatedBy || "-")}</td><td class="actions" data-label="Action"><button class="btn" data-edit-attendance="${r.id}">Edit</button><button class="btn danger" data-delete-attendance="${r.id}">Delete</button></td>` : ""}</tr>`).join("")}</tbody></table></div>`;
+  return `<div class="table-wrap record-scroll"><table class="responsive-table"><thead><tr>${admin ? "<th>Employee</th>" : ""}<th>Date</th><th>Session</th><th>In</th><th>Out</th><th>Hours</th><th>Status</th><th>Check-in Verify</th><th>Check-out Verify</th><th>Remark</th>${admin ? "<th>Updated By</th><th>Action</th>" : ""}</tr></thead><tbody>${records.map((r) => `<tr>${admin ? `<td data-label="Employee">${escapeHtml(employee(r.employeeId)?.name || r.employeeId)}</td>` : ""}<td data-label="Date">${formatDate(r.date)}</td><td data-label="Session">${escapeHtml(sessionLabel(r) || "-")}</td><td data-label="In">${r.checkIn || "-"}</td><td data-label="Out">${r.checkOut || "-"}</td><td data-label="Hours">${r.hours || "-"}</td><td data-label="Status"><span class="${badgeClass(r.status)}">${r.status}</span></td><td data-label="Check-in Verify">${escapeHtml(displayVerification(r.verification))}</td><td data-label="Check-out Verify">${escapeHtml(r.checkOut ? displayVerification(r.checkOutVerification || "GPS verified") : "-")}</td><td data-label="Remark">${escapeHtml(r.remark || "-")}</td>${admin ? `<td data-label="Updated By">${escapeHtml(r.updatedBy || "-")}</td><td class="actions" data-label="Action"><button class="btn" data-edit-attendance="${r.id}">Edit</button><button class="btn danger" data-delete-attendance="${r.id}">Delete</button></td>` : ""}</tr>`).join("")}</tbody></table></div>`;
 }
 
 function calendarForEmployee(employeeId, value = new Date()) {
@@ -1694,16 +1713,27 @@ async function checkIn(method) {
   toast("Checked in.");
 }
 
-function checkOut() {
+async function checkOut() {
   if (attendanceBusy) return toast("Attendance action is already processing.");
   if (!isActiveEmployee()) return toast("Inactive account cannot check out.");
   const record = currentOpenRecord();
   if (!record) return toast("No active check-in found.");
   attendanceBusy = true;
+  render();
+  let verification;
+  try {
+    toast("Checking office location...");
+    verification = await verifyOfficeLocation("Check-out GPS");
+  } catch (error) {
+    attendanceBusy = false;
+    render();
+    return toast(error.message || "Location check failed.");
+  }
   record.checkOut = nowTime();
   record.hours = duration(record.checkIn, record.checkOut);
   record.status = record.status === "Late" || record.status === "Off-day Work" ? record.status : "Present";
-  addAudit("Check out", `${session.name} checked out.`);
+  record.checkOutVerification = verification;
+  addAudit("Check out", `${session.name} checked out using ${verification}.`);
   saveState("Attendance updated.");
   attendanceBusy = false;
   render();
@@ -1713,26 +1743,36 @@ function checkOut() {
 async function submitLeave(event) {
   event.preventDefault();
   if (!isActiveEmployee()) return toast("Inactive account cannot submit requests.");
+  const submitButton = event.submitter || document.querySelector("#leaveForm button[type='submit']");
+  if (submitButton?.disabled) return;
+  if (submitButton) submitButton.disabled = true;
   const from = document.querySelector("#leaveFrom").value;
   const to = document.querySelector("#leaveTo").value;
   const duration = document.querySelector("#leaveDuration").value;
   const type = document.querySelector("#leaveType").value;
+  const reason = document.querySelector("#leaveReason").value.trim();
   const evidenceFile = document.querySelector("#leaveEvidenceFile")?.files?.[0] || null;
   const evidenceNote = document.querySelector("#leaveEvidenceNote")?.value.trim() || "";
-  if (from < today()) return toast("Start date cannot be in the past.");
-  if (to < from) return toast("End date must be after start date.");
-  if (duration !== "Full Day" && from !== to) return toast("Half day requests must use the same From and To date.");
-  if (type === "Emergency Leave" && !evidenceFile && !evidenceNote) return toast("MC or evidence is required for Emergency Leave.");
+  const failRequest = (message) => {
+    if (submitButton) submitButton.disabled = false;
+    toast(message);
+    return null;
+  };
+  if (!reason) return failRequest("Reason is required.");
+  if (from < today()) return failRequest("Start date cannot be in the past.");
+  if (to < from) return failRequest("End date must be after start date.");
+  if (duration !== "Full Day" && from !== to) return failRequest("Half day requests must use the same From and To date.");
+  if (type === "Emergency Leave" && !evidenceFile && !evidenceNote) return failRequest("MC or evidence is required for Emergency Leave.");
   let evidence = null;
   try {
     evidence = await readEvidenceFile(evidenceFile);
   } catch (error) {
-    return toast(error.message || "Evidence upload failed.");
+    return failRequest(error.message || "Evidence upload failed.");
   }
   if (evidence || evidenceNote) evidence = { ...(evidence || {}), note: evidenceNote };
-  const leave = { id: `LEV${Date.now()}`, employeeId: session.id, type, duration, from, to, reason: document.querySelector("#leaveReason").value.trim(), evidence, employeeSeen: true, status: "Pending", reviewedBy: "" };
+  const leave = { id: `LEV${Date.now()}`, employeeId: session.id, type, duration, from, to, reason, evidence, submittedAt: new Date().toLocaleString("en-GB", { hour12: false }), employeeSeen: true, status: "Pending", reviewedBy: "", reviewedAt: "" };
   const duplicate = state.leaves.some((item) => item.employeeId === session.id && requestConflicts(leave, item));
-  if (duplicate) return toast("This date already has a pending or approved request. Only Half Day Morning + Half Day Afternoon can share the same date.");
+  if (duplicate) return failRequest("This date already has a pending or approved request. Only Half Day Morning + Half Day Afternoon can share the same date.");
   state.leaves.push(leave);
   addAudit("Request submitted", `${session.name} submitted ${leave.type} (${duration}).`);
   saveState("New work request.");
@@ -1746,6 +1786,7 @@ function updateLeave(id, status) {
   if (leave.status !== "Pending") return toast("This request has already been reviewed.");
   leave.status = status;
   leave.reviewedBy = session.name;
+  leave.reviewedAt = new Date().toLocaleString("en-GB", { hour12: false });
   leave.employeeSeen = false;
   addAudit(`Request ${status}`, `${session.name} ${status.toLowerCase()} a work request.`);
   saveState("Request updated.");
@@ -1755,6 +1796,7 @@ function updateLeave(id, status) {
 
 function submitFeedback(event) {
   event.preventDefault();
+  if (session.role === "employee" && !isActiveEmployee()) return toast("Inactive account cannot submit feedback.");
   const item = {
     id: `FDB${Date.now()}`,
     employeeId: session.id,
@@ -1972,14 +2014,14 @@ async function updateEmployeeDistance() {
 
 function exportAttendance(scope) {
   const records = scope === "all" ? state.attendance : state.attendance.filter((item) => item.employeeId === session.id);
-  const rows = records.map((r) => [employee(r.employeeId)?.name || r.employeeId, r.employeeId, r.date, sessionLabel(r), r.checkIn, r.checkOut || "", r.hours || "", r.status, displayVerification(r.verification), r.remark || "", r.updatedBy || "", r.updatedAt || ""]);
-  downloadCSV(`${safeName(exportBase(scope, "attendance-records"))}.csv`, ["Employee", "Employee ID", "Date", "Session", "Check In", "Check Out", "Hours", "Status", "Verification", "Remark", "Updated By", "Updated At"], rows);
+  const rows = records.map((r) => [employee(r.employeeId)?.name || r.employeeId, r.employeeId, r.date, sessionLabel(r), r.checkIn, r.checkOut || "", r.hours || "", r.status, displayVerification(r.verification), r.checkOut ? displayVerification(r.checkOutVerification || "GPS verified") : "", r.remark || "", r.updatedBy || "", r.updatedAt || ""]);
+  downloadCSV(`${safeName(exportBase(scope, "attendance-records"))}.csv`, ["Employee", "Employee ID", "Date", "Session", "Check In", "Check Out", "Hours", "Status", "Check-in Verification", "Check-out Verification", "Remark", "Updated By", "Updated At"], rows);
 }
 
 function exportRequests(scope) {
   const requests = scope === "all" ? state.leaves : state.leaves.filter((item) => item.employeeId === session.id);
-  const rows = requests.map((r) => [employee(r.employeeId)?.name || r.employeeId, r.employeeId, r.type, requestDurationLabel(r), r.from, r.to, r.reason, evidenceLabel(r), r.status, r.reviewedBy || ""]);
-  downloadCSV(`${safeName(exportBase(scope, "work-requests"))}.csv`, ["Employee", "Employee ID", "Type", "Duration", "From", "To", "Reason", "Evidence", "Status", "Reviewed By"], rows);
+  const rows = requests.map((r) => [employee(r.employeeId)?.name || r.employeeId, r.employeeId, r.type, requestDurationLabel(r), r.from, r.to, r.reason, evidenceLabel(r), r.status, r.submittedAt || "", r.reviewedBy || "", r.reviewedAt || ""]);
+  downloadCSV(`${safeName(exportBase(scope, "work-requests"))}.csv`, ["Employee", "Employee ID", "Type", "Duration", "From", "To", "Reason", "Evidence", "Status", "Submitted At", "Reviewed By", "Reviewed At"], rows);
 }
 
 function exportEmployees() {
