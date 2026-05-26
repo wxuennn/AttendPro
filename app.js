@@ -983,7 +983,7 @@ function renderApp() {
   const isAdmin = session.role === "admin";
   const inactiveEmployee = session.role === "employee" && !isActiveEmployee();
   const nav = isAdmin
-    ? [["dashboard", "Dashboard"], ["employees", "Employees"], ["admins", "Admins"], ["records", "Attendance"], ["leaves", "Work Requests"], ["announcements", "Announcements"], ["feedback", "Feedback"], ["settings", "Settings"], ["audit", "Audit Log"], ["profile", "My Profile"]]
+    ? [["dashboard", "Dashboard"], ["records", "Attendance"], ["leaves", "Work Requests"], ["announcements", "Announcements"], ["employees", "Employees"], ["feedback", "Feedback"], ["admins", "Admins"], ["settings", "Settings"], ["audit", "Audit Log"], ["profile", "My Profile"]]
     : inactiveEmployee
       ? [["dashboard", "Dashboard"], ["history", "Attendance"]]
       : [["dashboard", "Dashboard"], ["history", "Attendance"], ["leave", "Work Request"], ["announcements", "Announcements"], ["feedback", "Feedback"], ["profile", "My Profile"]];
@@ -1022,8 +1022,8 @@ function renderApp() {
 function title() {
   return {
     dashboard: "Dashboard",
-    employees: "Manage Employees",
-    admins: "Manage Admins",
+    employees: "Employees",
+    admins: "Admins",
     records: "Attendance Records",
     leaves: "Work Requests",
     announcements: "Announcements",
@@ -1076,8 +1076,6 @@ function renderEmployeeDashboard() {
       <div class="metric"><span>Today Worked</span><strong>${totalHoursForDate(session.id, today())}</strong></div>
     </div>
     <div class="metrics"><div class="metric"><span>Employee Type</span><strong>${escapeHtml(emp.employeeType)}</strong></div><div class="metric"><span>Distance From Office</span><strong id="distanceText">${escapeHtml(currentDistanceText)}</strong><button class="btn compact-btn" id="updateDistance" type="button">Update</button></div><div class="metric code-metric"><div class="metric-row"><span>Current Code</span><small class="metric-timer" id="countdown">${secondsLeft()}s</small></div><strong id="liveCode">${currentCode()}</strong></div></div>
-    <section class="panel"><div class="panel-head"><h2>Leave Balance</h2></div>${leaveBalanceTable(session.id)}</section>
-    <section class="panel"><div class="panel-head"><h2>Scheme Status</h2></div><div class="policy-grid"><div><span>Scheme</span><strong>${escapeHtml(emp.scheme || emp.employeeType)}</strong></div><div><span>Monthly Worked</span><strong>${formatMinutes(scheme.worked)}</strong></div><div><span>Target</span><strong>${scheme.targetHours ? `${scheme.targetHours}h ${scheme.targetReached ? "Reached" : "Pending"}` : "Not set"}</strong></div><div><span>OT</span><strong>${scheme.otAfterHours ? `${scheme.otAfterHours}h ${scheme.otReached ? "Reached" : "Not yet"}` : "No OT rule"}</strong></div><div><span>Bonus</span><strong>${scheme.bonusAfterHours ? `${scheme.bonusAfterHours}h ${scheme.bonusReached ? "Reached" : "Not yet"}` : "No bonus rule"}</strong></div></div></section>
     ${inactive ? `<section class="panel notice danger">This account is inactive. You can view and export records only.</section>` : ""}
     <section class="panel">
       <div class="panel-head"><h2>Today Attendance</h2></div>
@@ -1093,6 +1091,8 @@ function renderEmployeeDashboard() {
         <button class="btn" id="checkOut" ${!open || inactive || attendanceBusy ? "disabled" : ""}>Check Out</button>
       </div>
     </section>
+    <section class="panel"><div class="panel-head"><h2>Leave Balance</h2><button class="btn" data-view="leave">Apply Request</button></div>${leaveBalanceTable(session.id)}</section>
+    <section class="panel"><div class="panel-head"><h2>Scheme Status</h2></div><div class="policy-grid"><div><span>Scheme</span><strong>${escapeHtml(emp.scheme || emp.employeeType)}</strong></div><div><span>Monthly Worked</span><strong>${formatMinutes(scheme.worked)}</strong></div><div><span>Target</span><strong>${scheme.targetHours ? `${scheme.targetHours}h ${scheme.targetReached ? "Reached" : "Pending"}` : "Not set"}</strong></div><div><span>OT</span><strong>${scheme.otAfterHours ? `${scheme.otAfterHours}h ${scheme.otReached ? "Reached" : "Not yet"}` : "No OT rule"}</strong></div><div><span>Bonus</span><strong>${scheme.bonusAfterHours ? `${scheme.bonusAfterHours}h ${scheme.bonusReached ? "Reached" : "Not yet"}` : "No bonus rule"}</strong></div></div></section>
     ${adminUpdates.length ? `<section class="panel notice-panel"><div class="panel-head"><h2>Admin Updates ${helpTip("These are attendance records adjusted by admin, such as absence correction, public holiday, approved correction, or missed checkout fix. Check the remark for the reason/proof.")}</h2></div><div class="update-list">${adminUpdates.map((record) => `<div class="update-item"><div><strong>${formatDate(record.date)}</strong><span>${escapeHtml(record.remark || "No remark provided.")}</span></div><span class="${badgeClass(record.status)}">${escapeHtml(record.status)}</span></div>`).join("")}</div></section>` : ""}
     <section class="panel"><div class="panel-head"><h2>Attendance Calendar</h2></div>${calendarPanel(session.id, false)}</section>
     <section class="panel"><div class="panel-head"><h2>Recent Attendance</h2><button class="btn" data-export-attendance="mine">Export CSV</button></div>${attendanceTable(state.attendance.filter((r) => r.employeeId === session.id).slice(-5).reverse(), false)}</section>
@@ -1116,6 +1116,10 @@ function renderAdminDashboard() {
       <div class="metric"><span>Pending Requests</span><strong>${pending}</strong></div>
       <div class="metric"><span>New Feedback</span><strong>${feedbackPending}</strong></div>
     </div>
+    <section class="panel quick-actions">
+      <div class="panel-head"><h2>Quick Actions</h2></div>
+      <div class="actions"><button class="btn primary" data-view="records">Manage Attendance</button><button class="btn" data-view="leaves">Review Requests</button><button class="btn" data-view="announcements">Post Announcement</button><button class="btn" data-view="employees">Manage Employees</button><button class="btn" data-view="settings">Company Settings</button></div>
+    </section>
     <section class="panel">
       <div class="panel-head"><div><h2>QR Check-In Display ${helpTip("Open this on a lobby monitor only. Employees scan the rotating QR to check in. The QR changes with the same timer as the manual code.")}</h2><p>Open this on a lobby monitor. QR refreshes every ${state.company.codeInterval}s.</p></div><button class="btn primary" id="openQr">Open QR Display</button></div>
       <div class="metrics compact"><div class="metric"><span>Manual Code</span><strong id="liveCode">${currentCode()}</strong></div><div class="metric"><span>Refresh In</span><strong id="countdown">${secondsLeft()}s</strong></div><div class="metric"><span>Late After</span><strong>${state.company.lateAfter}</strong></div></div>
@@ -1286,7 +1290,7 @@ function leaveTable(leaves, admin) {
 
 function renderEmployees() {
   const employees = state.employees.filter((emp) => includesSearch([emp.id, emp.name, emp.email, emp.department, emp.position, emp.employmentDate, emp.employeeType, emp.attendanceMode, emp.scheme, emp.phone, emp.plateNo, emp.status, emp.statusRemark], "employees"));
-  return `<section class="search-panel">${searchBox("employees", "Search employees")}</section><section class="panel"><div class="panel-head"><h2>Employees</h2><div class="actions"><button class="btn" data-export-employees>Export CSV</button><button class="btn primary" id="addEmployee">Add Employee</button></div></div><div class="table-wrap record-scroll"><table class="employees-table"><thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Password</th><th>Type</th><th>Scheme</th><th>Attendance Mode</th><th>Department</th><th>Position</th><th>Joined</th><th>Phone</th><th>Vehicle</th><th>Status</th><th>Remark</th><th>Action</th></tr></thead><tbody>${employees.map((emp) => `<tr><td>${emp.id}</td><td>${escapeHtml(emp.name)}</td><td>${escapeHtml(emp.email)}</td><td><code>${escapeHtml(emp.password)}</code></td><td>${escapeHtml(emp.employeeType)}</td><td>${escapeHtml(emp.scheme || emp.employeeType)}</td><td>${escapeHtml(emp.attendanceMode)}</td><td>${escapeHtml(emp.department)}</td><td>${escapeHtml(emp.position)}</td><td>${emp.employmentDate ? formatDate(emp.employmentDate) : "-"}</td><td>${escapeHtml(emp.phone || "-")}</td><td>${escapeHtml([emp.vehicleType, emp.plateNo].filter(Boolean).join(" ") || "-")}</td><td>${emp.status}</td><td>${escapeHtml(emp.statusRemark || "-")}</td><td><button class="btn" data-edit="${emp.id}">Edit</button></td></tr>`).join("") || `<tr><td colspan="15" class="empty">No employees found.</td></tr>`}</tbody></table></div></section>`;
+  return `<section class="search-panel">${searchBox("employees", "Search employees")}</section><section class="panel"><div class="panel-head"><h2>Employees</h2><div class="actions"><button class="btn primary" id="addEmployee">Add Employee</button><button class="btn" data-export-employees>Export CSV</button></div></div><div class="table-wrap record-scroll"><table class="employees-table"><thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Password</th><th>Type</th><th>Scheme</th><th>Attendance Mode</th><th>Department</th><th>Position</th><th>Joined</th><th>Phone</th><th>Vehicle</th><th>Status</th><th>Remark</th><th>Action</th></tr></thead><tbody>${employees.map((emp) => `<tr><td>${emp.id}</td><td>${escapeHtml(emp.name)}</td><td>${escapeHtml(emp.email)}</td><td><code>${escapeHtml(emp.password)}</code></td><td>${escapeHtml(emp.employeeType)}</td><td>${escapeHtml(emp.scheme || emp.employeeType)}</td><td>${escapeHtml(emp.attendanceMode)}</td><td>${escapeHtml(emp.department)}</td><td>${escapeHtml(emp.position)}</td><td>${emp.employmentDate ? formatDate(emp.employmentDate) : "-"}</td><td>${escapeHtml(emp.phone || "-")}</td><td>${escapeHtml([emp.vehicleType, emp.plateNo].filter(Boolean).join(" ") || "-")}</td><td>${emp.status}</td><td>${escapeHtml(emp.statusRemark || "-")}</td><td><button class="btn" data-edit="${emp.id}">Edit</button></td></tr>`).join("") || `<tr><td colspan="15" class="empty">No employees found.</td></tr>`}</tbody></table></div></section>`;
 }
 
 function renderAdmins() {
