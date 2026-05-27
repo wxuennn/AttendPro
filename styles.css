@@ -439,6 +439,14 @@ main { min-width: 0; }
 .announcement-item strong { display: block; font-size: 0.98rem; }
 .announcement-item span { color: var(--muted); }
 .announcement-item p { margin: 0; line-height: 1.5; }
+.announcement-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 2px 0 4px;
+  font-size: 0.84rem;
+  font-weight: 800;
+}
 .about-panel p { margin: 0 0 14px; line-height: 1.6; color: var(--muted); }
 .search-field {
   display: grid;
