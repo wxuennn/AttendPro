@@ -1,7 +1,7 @@
 const STORAGE_KEY = "attendpro-state-v2";
 const COMPANY_KEY_STORAGE = "attendpro-company-key";
 const DATASET_PASSWORD_STORAGE = "attendpro-dataset-password";
-const APP_VERSION = "20260527-announcement-ranges";
+const APP_VERSION = "20260527-announcement-guards";
 const APP_VERSION_STORAGE = "attendpro-app-version";
 const TAB_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const channel = "BroadcastChannel" in window ? new BroadcastChannel("attendpro-sync") : null;
@@ -1412,7 +1412,7 @@ function renderLeaveApproval() {
 
 function renderAnnouncements(admin) {
   const items = state.announcements.slice().sort((a, b) => `${b.date}${b.time}`.localeCompare(`${a.date}${a.time}`));
-  const form = admin ? `<form class="panel form-grid" id="announcementForm"><div class="panel-head wide"><h2>Post Announcement</h2></div><label class="field"><span>Title</span><input id="announcementTitle" required></label><label class="field"><span>Post Date</span><input id="announcementDate" type="date" value="${today()}" required></label><label class="field"><span>Post Time</span><input id="announcementTime" type="time" value="${nowTime()}" required></label><label class="field"><span>Event From</span><input id="announcementEventFrom" type="date" value="${today()}" required></label><label class="field"><span>Event To</span><input id="announcementEventTo" type="date" value="${today()}" required></label><label class="field check-line"><input id="announcementFullDay" type="checkbox" checked><span>Full day event / holiday</span></label><label class="field"><span>Start Time</span><input id="announcementStartTime" type="time"></label><label class="field"><span>End Time</span><input id="announcementEndTime" type="time"></label><label class="field"><span>Public Holiday Action</span><select id="announcementHolidayAction"><option value="">Announcement only</option><option value="add">Add public holiday / company event</option><option value="remove">Cancel public holiday / company event</option></select></label><label class="field wide"><span>Content</span><textarea id="announcementContent" required></textarea></label><button class="btn primary" type="submit">Publish</button></form>` : "";
+  const form = admin ? `<form class="panel form-grid" id="announcementForm"><div class="panel-head wide"><h2>Post Announcement</h2></div><label class="field"><span>Title</span><input id="announcementTitle" required></label><label class="field"><span>Post Date</span><input id="announcementDate" type="date" value="${today()}" required></label><label class="field"><span>Post Time</span><input id="announcementTime" type="time" value="${nowTime()}" required></label><label class="field"><span>Event From</span><input id="announcementEventFrom" type="date" value="${today()}" required></label><label class="field"><span>Event To</span><input id="announcementEventTo" type="date" value="${today()}" required></label><label class="field check-line"><input id="announcementFullDay" type="checkbox" checked><span>Full day event / holiday</span></label><label class="field"><span>Start Time</span><input id="announcementStartTime" type="time" disabled></label><label class="field"><span>End Time</span><input id="announcementEndTime" type="time" disabled></label><label class="field"><span>Calendar Action</span><select id="announcementHolidayAction"><option value="">Announcement only</option><option value="add">Add to calendar / holiday</option><option value="remove">Cancel from calendar / holiday</option></select><small>Full-day calendar items count as public holidays. Timed items appear on calendar but do not deduct leave.</small></label><label class="field wide"><span>Content</span><textarea id="announcementContent" required></textarea></label><button class="btn primary" type="submit">Publish</button></form>` : "";
   return `${form}<section class="panel"><div class="panel-head"><h2>Announcements</h2></div><div class="announcement-list">${items.map((item) => {
     const eventFrom = item.eventFrom || item.holidayDate || item.date;
     const eventTo = item.eventTo || item.holidayDate || eventFrom;
@@ -1532,14 +1532,8 @@ function bindEvents() {
     const to = document.querySelector("#announcementEventTo");
     if (to && (!to.value || to.value < event.target.value)) to.value = event.target.value;
   });
-  document.querySelector("#announcementFullDay")?.addEventListener("change", (event) => {
-    document.querySelector("#announcementStartTime") && (document.querySelector("#announcementStartTime").disabled = event.target.checked);
-    document.querySelector("#announcementEndTime") && (document.querySelector("#announcementEndTime").disabled = event.target.checked);
-  });
-  if (document.querySelector("#announcementFullDay")?.checked) {
-    document.querySelector("#announcementStartTime") && (document.querySelector("#announcementStartTime").disabled = true);
-    document.querySelector("#announcementEndTime") && (document.querySelector("#announcementEndTime").disabled = true);
-  }
+  document.querySelector("#announcementFullDay")?.addEventListener("change", syncAnnouncementTimeFields);
+  syncAnnouncementTimeFields();
   document.querySelector("#profileForm")?.addEventListener("submit", saveProfile);
   document.querySelector("#settingsForm")?.addEventListener("submit", saveSettings);
   document.querySelector("#useMyLocation")?.addEventListener("click", useMyLocationForOffice);
@@ -1597,6 +1591,21 @@ function bindPasswordToggles() {
       button.classList.toggle("active", input.type === "text");
     });
   });
+}
+
+function syncAnnouncementTimeFields() {
+  const fullDay = document.querySelector("#announcementFullDay");
+  const start = document.querySelector("#announcementStartTime");
+  const end = document.querySelector("#announcementEndTime");
+  if (!fullDay || !start || !end) return;
+  start.disabled = fullDay.checked;
+  end.disabled = fullDay.checked;
+  start.required = !fullDay.checked;
+  end.required = !fullDay.checked;
+  if (fullDay.checked) {
+    start.value = "";
+    end.value = "";
+  }
 }
 
 function ensureHelpBubble() {
@@ -1885,16 +1894,24 @@ function reviewFeedback(id) {
 
 function submitAnnouncement(event) {
   event.preventDefault();
+  const submitButton = event.submitter || document.querySelector("#announcementForm button[type='submit']");
+  if (submitButton?.disabled) return;
+  if (submitButton) submitButton.disabled = true;
   const holidayAction = document.querySelector("#announcementHolidayAction").value;
   const eventFrom = document.querySelector("#announcementEventFrom").value;
   const eventTo = document.querySelector("#announcementEventTo").value;
   const eventFullDay = document.querySelector("#announcementFullDay").checked;
   const eventStartTime = document.querySelector("#announcementStartTime").value;
   const eventEndTime = document.querySelector("#announcementEndTime").value;
-  if (!eventFrom || !eventTo) return toast("Select announcement event date range.");
-  if (eventTo < eventFrom) return toast("Event To date must be after Event From date.");
-  if (!eventFullDay && (!eventStartTime || !eventEndTime)) return toast("Enter start and end time for non-full-day announcements.");
-  if (!eventFullDay && eventFrom === eventTo && eventEndTime <= eventStartTime) return toast("End time must be after start time.");
+  const failAnnouncement = (message) => {
+    if (submitButton) submitButton.disabled = false;
+    toast(message);
+    return null;
+  };
+  if (!eventFrom || !eventTo) return failAnnouncement("Select announcement event date range.");
+  if (eventTo < eventFrom) return failAnnouncement("Event To date must be after Event From date.");
+  if (!eventFullDay && (!eventStartTime || !eventEndTime)) return failAnnouncement("Enter start and end time for non-full-day announcements.");
+  if (!eventFullDay && eventFrom === eventTo && eventEndTime <= eventStartTime) return failAnnouncement("End time must be after start time.");
   const item = {
     id: `ANN${Date.now()}`,
     title: document.querySelector("#announcementTitle").value.trim(),
@@ -1911,18 +1928,23 @@ function submitAnnouncement(event) {
     holidayAction,
     holidayDate: eventFrom
   };
-  if (!item.title || !item.content) return toast("Fill in announcement title and content.");
+  if (!item.title || !item.content) return failAnnouncement("Fill in announcement title and content.");
   state.announcements.unshift(item);
   if (holidayAction === "add") {
     const exists = state.company.publicHolidays.some((holiday) => holiday.announcementId === item.id);
     if (!exists) state.company.publicHolidays.push({ id: `HOL${Date.now()}`, announcementId: item.id, from: eventFrom, to: eventTo, title: item.title, fullDay: eventFullDay, startTime: item.eventStartTime, endTime: item.eventEndTime });
   }
   if (holidayAction === "remove") {
+    const beforeCount = state.company.publicHolidays.length;
     state.company.publicHolidays = state.company.publicHolidays.filter((holiday) => {
       const from = holiday.from || holiday.date;
       const to = holiday.to || holiday.date || from;
-      return to < eventFrom || from > eventTo;
+      const sameFullDayMode = (holiday.fullDay !== false) === eventFullDay;
+      const sameTime = eventFullDay || ((holiday.startTime || "") === item.eventStartTime && (holiday.endTime || "") === item.eventEndTime);
+      const fullyInsideRange = from >= eventFrom && to <= eventTo;
+      return !(fullyInsideRange && sameFullDayMode && sameTime);
     });
+    if (beforeCount === state.company.publicHolidays.length) return failAnnouncement("No matching calendar holiday/event found for that range and time.");
   }
   addAudit("Announcement published", `${session.name} published ${item.title} for ${periodLabel(eventFrom, eventTo, eventFullDay, item.eventStartTime, item.eventEndTime)}${holidayAction ? ` and ${holidayAction === "add" ? "added" : "cancelled"} calendar holiday/event` : ""}.`);
   saveState("Announcement published.");

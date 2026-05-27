@@ -141,6 +141,11 @@ main { min-width: 0; }
 .field span { color: var(--muted); font-weight: 760; font-size: 0.84rem; }
 .field input, .field select, .field textarea, .select-control { width: 100%; min-height: 36px; padding: 7px 10px; border: 1px solid var(--line); border-radius: var(--radius); background: #fbfdfc; color: var(--ink); box-shadow: inset 0 1px 0 rgba(17, 36, 45, 0.02); }
 .field input:focus, .field select:focus, .field textarea:focus, .select-control:focus { border-color: #7fb6b2; outline: 2px solid rgba(11, 111, 114, 0.13); background: white; }
+.field input:disabled, .field select:disabled, .field textarea:disabled {
+  color: #93a1a6;
+  background: #eef3f4;
+  cursor: not-allowed;
+}
 .field textarea { min-height: 82px; resize: vertical; }
 .password-control {
   display: grid;
