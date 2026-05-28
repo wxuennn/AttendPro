@@ -1,7 +1,7 @@
 const STORAGE_KEY = "attendpro-state-v2";
 const COMPANY_KEY_STORAGE = "attendpro-company-key";
 const DATASET_PASSWORD_STORAGE = "attendpro-dataset-password";
-const APP_VERSION = "20260527-announcement-guards";
+const APP_VERSION = "20260528-attendance-contract-wfh";
 const APP_VERSION_STORAGE = "attendpro-app-version";
 const TAB_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const channel = "BroadcastChannel" in window ? new BroadcastChannel("attendpro-sync") : null;
@@ -174,7 +174,11 @@ function normalize(input) {
       idNumber: emp.idNumber || "",
       emergencyContact: emp.emergencyContact || "",
       vehicleType: emp.vehicleType || "",
-      plateNo: emp.plateNo || ""
+      plateNo: emp.plateNo || "",
+      contractStart: emp.contractStart || emp.employmentDate || "",
+      contractEnd: emp.contractEnd || "",
+      contractStatus: emp.contractStatus || (emp.employeeType === "Contract" && emp.contractEnd && emp.contractEnd < today() ? "Ended" : "Active"),
+      contractRemark: emp.contractRemark || ""
     })),
     attendance: (input.attendance || []).map((record) => ({
       ...record,
@@ -482,6 +486,18 @@ async function verifyOfficeLocation(method) {
   return `${method} + GPS verified (${distance}m)`;
 }
 
+async function remoteWorkVerification(request) {
+  const status = remoteWorkStatus(request);
+  try {
+    const position = await getCurrentPosition();
+    const current = { lat: position.coords.latitude, lng: position.coords.longitude };
+    const distance = officeLocationReady() ? distanceMeters(current, officePoint()) : null;
+    return `${status} approved${distance === null ? "" : ` (${distance}m from office)`}`;
+  } catch {
+    return `${status} approved (location unavailable)`;
+  }
+}
+
 function employee(id) {
   return state.employees.find((item) => item.id === id);
 }
@@ -506,7 +522,7 @@ function recordsForDate(employeeId, dateValue) {
 }
 
 function isOpenAttendanceRecord(record) {
-  return Boolean(record.checkIn && !record.checkOut && ["Checked In", "Late", "Off-day Work"].includes(record.status));
+  return Boolean(record.checkIn && !record.checkOut && ["Checked In", "Late", "Off-day Work", "WFH", "Business Trip"].includes(record.status));
 }
 
 function allowsMultipleSessions(emp = employee(session?.id)) {
@@ -539,9 +555,15 @@ function calendarDayLabel(employeeId, dateValue, status) {
   return `${status.label} - ${sessionText} - ${timeText}`;
 }
 
+function isContractEnded(emp, dateValue = today()) {
+  if (!emp || emp.employeeType !== "Contract") return false;
+  if (emp.contractStatus === "Ended") return true;
+  return Boolean(emp.contractEnd && emp.contractEnd < dateValue);
+}
+
 function isActiveEmployee(id = session?.id) {
   const emp = employee(id);
-  return !emp || emp.status !== "Inactive";
+  return !emp || (emp.status !== "Inactive" && !isContractEnded(emp));
 }
 
 function isWorkingDay(dateValue) {
@@ -651,6 +673,14 @@ function approvedRequestForDate(employeeId, dateValue) {
   return requestsForDate(employeeId, dateValue).find((request) => request.status === "Approved");
 }
 
+function approvedRemoteWorkForDate(employeeId, dateValue) {
+  return requestsForDate(employeeId, dateValue).find((request) => request.status === "Approved" && ["WFH", "Business Trip"].includes(request.type));
+}
+
+function remoteWorkStatus(request) {
+  return request?.type === "Business Trip" ? "Business Trip" : "WFH";
+}
+
 function requestDurationLabel(request) {
   return request.duration || "Full Day";
 }
@@ -750,6 +780,8 @@ function calendarStatus(employeeId, dateValue) {
   if (records.length) {
     if (records.some((record) => record.status === "Public Holiday")) return { label: "Public Holiday", type: "holiday" };
     if (records.some((record) => record.status === "Absent")) return { label: "Absent", type: "absent" };
+    if (records.some((record) => record.status === "WFH")) return { label: "WFH", type: "wfh" };
+    if (records.some((record) => record.status === "Business Trip")) return { label: "Business Trip", type: "business-trip" };
     if (records.some((record) => record.status === "Late")) return { label: "Late", type: "late" };
     if (records.some((record) => record.status === "Checked In")) return { label: "Checked In", type: "active" };
     if (records.some((record) => record.status === "Off-day Work")) return { label: "Off-day Work", type: "offwork" };
@@ -761,7 +793,7 @@ function calendarStatus(employeeId, dateValue) {
   const rejected = requestsForDate(employeeId, dateValue).find((request) => request.status === "Rejected");
   const holiday = holidayForDate(dateValue);
   if (holiday) return { label: holidayLabel(holiday), type: "holiday" };
-  if (approved) return { label: requestCalendarLabel(approved), type: approved.type.includes("WFH") ? "wfh" : "approved" };
+  if (approved) return { label: requestCalendarLabel(approved), type: approved.type.includes("WFH") ? "wfh" : approved.type === "Business Trip" ? "business-trip" : "approved" };
   if (pending) return { label: `Pending ${requestCalendarLabel(pending)}`, type: "pending" };
   if (rejected) return { label: `Rejected ${requestCalendarLabel(rejected)}`, type: "rejected" };
   if (isWorkingDay(dateValue) && dateValue < today()) return { label: "Absent", type: "absent" };
@@ -773,6 +805,8 @@ function displayVerification(value) {
   if (text.includes("Manual rotating code")) return "Code";
   if (text.includes("Rotating QR code")) return "QR";
   if (text.includes("Admin manual update")) return "Admin Update";
+  if (text.includes("WFH approved")) return "WFH";
+  if (text.includes("Business Trip approved")) return "Business Trip";
   return text.replace(/\s*\+\s*GPS verified.*$/i, "");
 }
 
@@ -1296,6 +1330,7 @@ function renderRecords(admin) {
     .filter((item) => !admin || item.date === selectedAttendanceDate)
     .filter((item) => includesSearch([employee(item.employeeId)?.name, item.employeeId, item.date, formatDate(item.date), item.status, item.verification], key));
   if (!selectedCalendarEmployee || !employee(selectedCalendarEmployee)) selectedCalendarEmployee = state.employees[0]?.id || "";
+  if (admin) selectedCalendarEmployee = selectedAttendanceEmployee;
   const selectedEmp = employee(selectedCalendarEmployee);
   const attendanceFilters = admin
     ? `<section class="search-panel filter-panel">${searchBox(key, "Search selected day records")}<label class="search-field"><span>Employee</span><select class="select-control" id="attendanceEmployee">${state.employees.map((emp) => `<option value="${emp.id}" ${emp.id === selectedAttendanceEmployee ? "selected" : ""}>${escapeHtml(emp.name)} (${escapeHtml(emp.id)})</option>`).join("")}</select></label><label class="search-field"><span>Date</span><input id="attendanceDate" type="date" value="${selectedAttendanceDate}"></label></section>`
@@ -1359,7 +1394,7 @@ function calendarMonthSummary(employeeId, dates = monthDates()) {
   const emp = employee(employeeId);
   const records = state.attendance.filter((item) => item.employeeId === employeeId && dates.includes(item.date));
   const totalMinutes = records.reduce((sum, record) => sum + parseDurationMinutes(record.hours), 0);
-  const workedDays = new Set(records.filter((record) => record.hours || ["Present", "Late", "Checked In", "Off-day Work"].includes(record.status)).map((record) => record.date)).size;
+  const workedDays = new Set(records.filter((record) => record.hours || ["Present", "Late", "Checked In", "Off-day Work", "WFH", "Business Trip"].includes(record.status)).map((record) => record.date)).size;
   const absentDays = dates.filter((dateValue) => calendarStatus(employeeId, dateValue).type === "absent").length;
   const lateDays = records.filter((record) => record.status === "Late").length;
   const scheme = emp ? schemeForEmployee(emp) : {};
@@ -1447,7 +1482,7 @@ function leaveTable(leaves, admin) {
 
 function renderEmployees() {
   const employees = state.employees.filter((emp) => includesSearch([emp.id, emp.name, emp.email, emp.department, emp.position, emp.employmentDate, emp.employeeType, emp.attendanceMode, emp.scheme, emp.phone, emp.plateNo, emp.status, emp.statusRemark], "employees"));
-  return `<section class="search-panel">${searchBox("employees", "Search employees")}</section><section class="panel"><div class="panel-head"><h2>Employees</h2><div class="actions"><button class="btn primary" id="addEmployee">Add Employee</button><button class="btn" data-export-employees>Export CSV</button></div></div><div class="table-wrap record-scroll"><table class="employees-table"><thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Password</th><th>Type</th><th>Scheme</th><th>Attendance Mode</th><th>Department</th><th>Position</th><th>Joined</th><th>Phone</th><th>Vehicle</th><th>Status</th><th>Remark</th><th>Action</th></tr></thead><tbody>${employees.map((emp) => `<tr><td>${emp.id}</td><td>${escapeHtml(emp.name)}</td><td>${escapeHtml(emp.email)}</td><td><code>${escapeHtml(emp.password)}</code></td><td>${escapeHtml(emp.employeeType)}</td><td>${escapeHtml(emp.scheme || emp.employeeType)}</td><td>${escapeHtml(emp.attendanceMode)}</td><td>${escapeHtml(emp.department)}</td><td>${escapeHtml(emp.position)}</td><td>${emp.employmentDate ? formatDate(emp.employmentDate) : "-"}</td><td>${escapeHtml(emp.phone || "-")}</td><td>${escapeHtml([emp.vehicleType, emp.plateNo].filter(Boolean).join(" ") || "-")}</td><td>${emp.status}</td><td>${escapeHtml(emp.statusRemark || "-")}</td><td><button class="btn" data-edit="${emp.id}">Edit</button></td></tr>`).join("") || `<tr><td colspan="15" class="empty">No employees found.</td></tr>`}</tbody></table></div></section>`;
+  return `<section class="search-panel">${searchBox("employees", "Search employees")}</section><section class="panel"><div class="panel-head"><h2>Employees</h2><div class="actions"><button class="btn primary" id="addEmployee">Add Employee</button><button class="btn" data-export-employees>Export CSV</button></div></div><div class="table-wrap record-scroll"><table class="employees-table"><thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Password</th><th>Type</th><th>Scheme</th><th>Attendance Mode</th><th>Department</th><th>Position</th><th>Joined</th><th>Contract End</th><th>Phone</th><th>Vehicle</th><th>Status</th><th>Remark</th><th>Action</th></tr></thead><tbody>${employees.map((emp) => `<tr><td>${emp.id}</td><td>${escapeHtml(emp.name)}</td><td>${escapeHtml(emp.email)}</td><td><code>${escapeHtml(emp.password)}</code></td><td>${escapeHtml(emp.employeeType)}</td><td>${escapeHtml(emp.scheme || emp.employeeType)}</td><td>${escapeHtml(emp.attendanceMode)}</td><td>${escapeHtml(emp.department)}</td><td>${escapeHtml(emp.position)}</td><td>${emp.employmentDate ? formatDate(emp.employmentDate) : "-"}</td><td>${emp.employeeType === "Contract" && emp.contractEnd ? `${formatDate(emp.contractEnd)} (${isContractEnded(emp) ? "Ended" : emp.contractStatus || "Active"})` : "-"}</td><td>${escapeHtml(emp.phone || "-")}</td><td>${escapeHtml([emp.vehicleType, emp.plateNo].filter(Boolean).join(" ") || "-")}</td><td>${isContractEnded(emp) ? "Contract Ended" : emp.status}</td><td>${escapeHtml(emp.statusRemark || emp.contractRemark || "-")}</td><td><button class="btn" data-edit="${emp.id}">Edit</button></td></tr>`).join("") || `<tr><td colspan="16" class="empty">No employees found.</td></tr>`}</tbody></table></div></section>`;
 }
 
 function renderAdmins() {
@@ -1560,6 +1595,7 @@ function bindEvents() {
   }));
   document.querySelector("#calendarEmployee")?.addEventListener("change", (event) => {
     selectedCalendarEmployee = event.target.value;
+    if (session?.role === "admin") selectedAttendanceEmployee = event.target.value;
     normalizeCalendarPeriod(selectedCalendarEmployee);
     render();
   });
@@ -1573,6 +1609,8 @@ function bindEvents() {
   });
   document.querySelector("#attendanceEmployee")?.addEventListener("change", (event) => {
     selectedAttendanceEmployee = event.target.value;
+    selectedCalendarEmployee = event.target.value;
+    normalizeCalendarPeriod(selectedCalendarEmployee);
     render();
   });
   document.querySelector("#attendanceDate")?.addEventListener("change", (event) => {
@@ -1753,9 +1791,10 @@ async function checkIn(method) {
   attendanceBusy = true;
   render();
   let verification;
+  const remoteRequest = approvedRemoteWorkForDate(session.id, today());
   try {
-    toast("Checking office location...");
-    verification = await verifyOfficeLocation(method);
+    toast(remoteRequest ? "Checking approved remote work..." : "Checking office location...");
+    verification = remoteRequest ? await remoteWorkVerification(remoteRequest) : await verifyOfficeLocation(method);
   } catch (error) {
     attendanceBusy = false;
     render();
@@ -1768,7 +1807,7 @@ async function checkIn(method) {
   }
   const time = nowTime();
   const first = todaysRecords().length === 0;
-  const status = !isWorkingDay(today()) ? "Off-day Work" : first && minutes(time) > minutes(state.company.lateAfter) ? "Late" : "Checked In";
+  const status = remoteRequest ? remoteWorkStatus(remoteRequest) : !isWorkingDay(today()) ? "Off-day Work" : first && minutes(time) > minutes(state.company.lateAfter) ? "Late" : "Checked In";
   const sessionNo = todaysRecords().filter((record) => record.checkIn).length + 1;
   state.attendance.push({ id: `ATT${Date.now()}`, employeeId: session.id, date: today(), checkIn: time, checkOut: "", hours: "", status, verification, sessionNo, sessionLabel: `Session ${sessionNo}` });
   addAudit("Check in", `${session.name} checked in using ${verification}.`);
@@ -1788,8 +1827,9 @@ async function checkOut() {
   render();
   let verification;
   try {
-    toast("Checking office location...");
-    verification = await verifyOfficeLocation("Check-out GPS");
+    const remoteStatus = ["WFH", "Business Trip"].includes(record.status);
+    toast(remoteStatus ? "Checking approved remote checkout..." : "Checking office location...");
+    verification = remoteStatus ? await remoteWorkVerification({ type: record.status }) : await verifyOfficeLocation("Check-out GPS");
   } catch (error) {
     attendanceBusy = false;
     render();
@@ -1797,7 +1837,7 @@ async function checkOut() {
   }
   record.checkOut = nowTime();
   record.hours = duration(record.checkIn, record.checkOut);
-  record.status = record.status === "Late" || record.status === "Off-day Work" ? record.status : "Present";
+  record.status = ["Late", "Off-day Work", "WFH", "Business Trip"].includes(record.status) ? record.status : "Present";
   record.checkOutVerification = verification;
   addAudit("Check out", `${session.name} checked out using ${verification}.`);
   saveState("Attendance updated.");
@@ -1929,14 +1969,8 @@ function submitAnnouncement(event) {
     holidayDate: eventFrom
   };
   if (!item.title || !item.content) return failAnnouncement("Fill in announcement title and content.");
-  state.announcements.unshift(item);
-  if (holidayAction === "add") {
-    const exists = state.company.publicHolidays.some((holiday) => holiday.announcementId === item.id);
-    if (!exists) state.company.publicHolidays.push({ id: `HOL${Date.now()}`, announcementId: item.id, from: eventFrom, to: eventTo, title: item.title, fullDay: eventFullDay, startTime: item.eventStartTime, endTime: item.eventEndTime });
-  }
   if (holidayAction === "remove") {
-    const beforeCount = state.company.publicHolidays.length;
-    state.company.publicHolidays = state.company.publicHolidays.filter((holiday) => {
+    const filteredHolidays = state.company.publicHolidays.filter((holiday) => {
       const from = holiday.from || holiday.date;
       const to = holiday.to || holiday.date || from;
       const sameFullDayMode = (holiday.fullDay !== false) === eventFullDay;
@@ -1944,8 +1978,14 @@ function submitAnnouncement(event) {
       const fullyInsideRange = from >= eventFrom && to <= eventTo;
       return !(fullyInsideRange && sameFullDayMode && sameTime);
     });
-    if (beforeCount === state.company.publicHolidays.length) return failAnnouncement("No matching calendar holiday/event found for that range and time.");
+    if (filteredHolidays.length === state.company.publicHolidays.length) return failAnnouncement("No matching calendar holiday/event found for that range and time.");
+    state.company.publicHolidays = filteredHolidays;
   }
+  if (holidayAction === "add") {
+    const exists = state.company.publicHolidays.some((holiday) => holiday.announcementId === item.id);
+    if (!exists) state.company.publicHolidays.push({ id: `HOL${Date.now()}`, announcementId: item.id, from: eventFrom, to: eventTo, title: item.title, fullDay: eventFullDay, startTime: item.eventStartTime, endTime: item.eventEndTime });
+  }
+  state.announcements.unshift(item);
   addAudit("Announcement published", `${session.name} published ${item.title} for ${periodLabel(eventFrom, eventTo, eventFullDay, item.eventStartTime, item.eventEndTime)}${holidayAction ? ` and ${holidayAction === "add" ? "added" : "cancelled"} calendar holiday/event` : ""}.`);
   saveState("Announcement published.");
   render();
@@ -2120,8 +2160,8 @@ function exportRequests(scope) {
 }
 
 function exportEmployees() {
-  const rows = state.employees.map((emp) => [emp.id, emp.name, emp.email, emp.password, emp.employeeType, emp.scheme || emp.employeeType, emp.attendanceMode, emp.department, emp.position, emp.employmentDate || "", emp.phone || "", emp.idNumber || "", emp.address || "", emp.emergencyContact || "", emp.vehicleType || "", emp.plateNo || "", emp.status, emp.statusRemark || "", emp.statusUpdatedBy || "", emp.statusUpdatedAt || ""]);
-  downloadCSV(`${safeName(`${companyReportName()}-employee-list-${today()}`)}.csv`, ["ID", "Name", "Email", "Password", "Employee Type", "Scheme", "Attendance Mode", "Department", "Position", "Employment Date", "Phone", "IC / Passport No.", "Address", "Emergency Contact", "Vehicle Type", "Plate No", "Status", "Status Remark", "Updated By", "Updated At"], rows);
+  const rows = state.employees.map((emp) => [emp.id, emp.name, emp.email, emp.password, emp.employeeType, emp.scheme || emp.employeeType, emp.attendanceMode, emp.department, emp.position, emp.employmentDate || "", emp.contractStart || "", emp.contractEnd || "", emp.contractStatus || "", emp.contractRemark || "", emp.phone || "", emp.idNumber || "", emp.address || "", emp.emergencyContact || "", emp.vehicleType || "", emp.plateNo || "", isContractEnded(emp) ? "Contract Ended" : emp.status, emp.statusRemark || "", emp.statusUpdatedBy || "", emp.statusUpdatedAt || ""]);
+  downloadCSV(`${safeName(`${companyReportName()}-employee-list-${today()}`)}.csv`, ["ID", "Name", "Email", "Password", "Employee Type", "Scheme", "Attendance Mode", "Department", "Position", "Employment Date", "Contract Start", "Contract End", "Contract Status", "Contract Remark", "Phone", "IC / Passport No.", "Address", "Emergency Contact", "Vehicle Type", "Plate No", "Status", "Status Remark", "Updated By", "Updated At"], rows);
 }
 
 function exportAudit() {
@@ -2208,7 +2248,7 @@ function exportTimesheet(target) {
 function openManualAttendanceModal() {
   if (!state.employees.length) return toast("Add employees first.");
   const modal = document.querySelector("#modal");
-  modal.innerHTML = `<form class="modal" id="manualAttendanceForm"><h2>Add Manual Status ${helpTip("Use this only for approved corrections such as public holiday, confirmed absence, missed checkout, HR-approved correction, or admin override. Every save is shown to the employee and stored in audit log.")}</h2><p class="helper">Use this for approved corrections, absence updates, or public holidays. A remark is required for audit tracking.</p><label class="field"><span>Employee</span><select id="manualEmployee">${state.employees.map((emp) => `<option value="${emp.id}">${escapeHtml(emp.name)} (${escapeHtml(emp.id)})</option>`).join("")}</select></label><label class="field"><span>From Date</span><input id="manualFrom" type="date" value="${today()}" required></label><label class="field"><span>To Date</span><input id="manualTo" type="date" value="${today()}" required></label><label class="field"><span class="label-row">Status ${helpTip("Absent/Public Holiday do not use check-in time. Present/Late/Checked In require check-in time so the record is meaningful.")}</span><select id="manualStatus"><option>Absent</option><option>Public Holiday</option><option>Present</option><option>Late</option><option>Checked In</option></select></label><label class="field"><span>Check In Time</span><input id="manualCheckIn" type="time"></label><label class="field"><span>Check Out Time</span><input id="manualCheckOut" type="time"></label><label class="field check-line"><input id="manualAllEmployees" type="checkbox"><span>Apply to all employees for this date range</span></label><label class="field"><span>Remark / Proof</span><textarea id="manualRemark" required placeholder="Example: Public holiday approved by management, medical proof received, admin correction after missed checkout"></textarea></label><div class="modal-actions"><button class="btn primary" type="submit">Save Status</button><button class="btn" type="button" id="closeModal">Cancel</button></div></form>`;
+  modal.innerHTML = `<form class="modal" id="manualAttendanceForm"><h2>Add Manual Status ${helpTip("Use this only for approved corrections such as public holiday, confirmed absence, WFH/business trip confirmation, missed checkout, HR-approved correction, or admin override. Every save is shown to the employee and stored in audit log.")}</h2><p class="helper">Use this for approved corrections, absence updates, public holidays, WFH, or business trips. A remark is required for audit tracking.</p><label class="field"><span>Employee</span><select id="manualEmployee">${state.employees.map((emp) => `<option value="${emp.id}">${escapeHtml(emp.name)} (${escapeHtml(emp.id)})</option>`).join("")}</select></label><label class="field"><span>From Date</span><input id="manualFrom" type="date" value="${today()}" required></label><label class="field"><span>To Date</span><input id="manualTo" type="date" value="${today()}" required></label><label class="field"><span class="label-row">Status ${helpTip("Absent/Public Holiday do not need check-in time. Present/Late/Checked In/WFH/Business Trip can include time so total hours stays meaningful.")}</span><select id="manualStatus"><option>Absent</option><option>Public Holiday</option><option>Present</option><option>Late</option><option>Checked In</option><option>WFH</option><option>Business Trip</option></select></label><label class="field"><span>Check In Time</span><input id="manualCheckIn" type="time"></label><label class="field"><span>Check Out Time</span><input id="manualCheckOut" type="time"></label><label class="field check-line"><input id="manualAllEmployees" type="checkbox"><span>Apply to all employees for this date range</span></label><label class="field"><span>Remark / Proof</span><textarea id="manualRemark" required placeholder="Example: Public holiday approved by management, WFH approved by HR, admin correction after missed checkout"></textarea></label><div class="modal-actions"><button class="btn primary" type="submit">Save Status</button><button class="btn" type="button" id="closeModal">Cancel</button></div></form>`;
   modal.classList.add("show");
   document.querySelector("#closeModal").addEventListener("click", closeModal);
   document.querySelector("#manualAttendanceForm").addEventListener("submit", saveManualAttendance);
@@ -2287,22 +2327,51 @@ function saveManualAttendance(event) {
 }
 
 function openEmployeeModal(id) {
-  const emp = employee(id) || { id: `EMP${String(state.employees.length + 1).padStart(3, "0")}`, name: "", email: "", password: "employee123", employeeType: "Permanent", scheme: "Permanent", attendanceMode: "Single Daily", department: "", position: "", employmentDate: today(), phone: "", idNumber: "", address: "", emergencyContact: "", vehicleType: "", plateNo: "", status: "Active", statusRemark: "" };
+  const emp = employee(id) || { id: `EMP${String(state.employees.length + 1).padStart(3, "0")}`, name: "", email: "", password: "employee123", employeeType: "Permanent", scheme: "Permanent", attendanceMode: "Single Daily", department: "", position: "", employmentDate: today(), phone: "", idNumber: "", address: "", emergencyContact: "", vehicleType: "", plateNo: "", contractStart: today(), contractEnd: "", contractStatus: "Active", contractRemark: "", status: "Active", statusRemark: "" };
+  const contractMonths = emp.contractStart && emp.contractEnd ? Math.max(1, (new Date(`${emp.contractEnd}T00:00:00`).getFullYear() - new Date(`${emp.contractStart}T00:00:00`).getFullYear()) * 12 + (new Date(`${emp.contractEnd}T00:00:00`).getMonth() - new Date(`${emp.contractStart}T00:00:00`).getMonth()) + 1) : "";
   const modal = document.querySelector("#modal");
-  modal.innerHTML = `<form class="modal" id="employeeForm"><h2>${id ? "Edit" : "Add"} Employee</h2><label class="field"><span>ID</span><input id="empId" value="${emp.id}" ${id ? "readonly" : ""}></label><label class="field"><span>Name</span><input id="empName" value="${escapeHtml(emp.name)}" required></label><label class="field"><span>Email</span><input id="empEmail" type="email" value="${escapeHtml(emp.email)}" required></label><label class="field"><span>Password</span><input id="empPassword" value="${escapeHtml(emp.password)}" required></label><label class="field"><span class="label-row">Employee Type ${helpTip("Permanent is usually full-time long-term staff. Part-time and Contract employees often use multiple sessions so daily total hours can be calculated for payroll.")}</span><select id="empType"><option ${emp.employeeType === "Permanent" ? "selected" : ""}>Permanent</option><option ${emp.employeeType === "Part-time" ? "selected" : ""}>Part-time</option><option ${emp.employeeType === "Contract" ? "selected" : ""}>Contract</option><option ${emp.employeeType === "Intern" ? "selected" : ""}>Intern</option></select></label><label class="field"><span>Scheme</span><select id="empScheme">${["Permanent", "Part-time", "Contract", "Intern"].map((type) => `<option ${((emp.scheme || emp.employeeType) === type) ? "selected" : ""}>${type}</option>`).join("")}</select></label><label class="field"><span class="label-row">Attendance Mode ${helpTip("Single Daily allows one check-in per day. Multiple Sessions allows repeated check-in/out sessions and totals all hours for that day.")}</span><select id="empAttendanceMode"><option ${emp.attendanceMode === "Single Daily" ? "selected" : ""}>Single Daily</option><option ${emp.attendanceMode === "Multiple Sessions" ? "selected" : ""}>Multiple Sessions</option></select></label><label class="field"><span>Department</span><input id="empDept" value="${escapeHtml(emp.department)}"></label><label class="field"><span>Position</span><input id="empPos" value="${escapeHtml(emp.position)}"></label><label class="field"><span>Employment Date</span><input id="empEmploymentDate" type="date" value="${emp.employmentDate || today()}" required></label><label class="field"><span>Phone</span><input id="empPhone" value="${escapeHtml(emp.phone || "")}"></label><label class="field"><span>IC / Passport No.</span><input id="empIdNumber" value="${escapeHtml(emp.idNumber || "")}"></label><label class="field"><span>Emergency Contact</span><input id="empEmergency" value="${escapeHtml(emp.emergencyContact || "")}"></label><label class="field"><span>Vehicle Type</span><input id="empVehicleType" value="${escapeHtml(emp.vehicleType || "")}" placeholder="Car / Motorcycle / None"></label><label class="field"><span>Plate No.</span><input id="empPlate" value="${escapeHtml(emp.plateNo || "")}"></label><label class="field wide"><span>Address</span><textarea id="empAddress">${escapeHtml(emp.address || "")}</textarea></label><label class="field"><span>Status</span><select id="empStatus"><option ${emp.status === "Active" ? "selected" : ""}>Active</option><option ${emp.status === "Inactive" ? "selected" : ""}>Inactive</option></select></label><label class="field"><span>Status Remark / Proof</span><textarea id="empStatusRemark" placeholder="Required if status is changed">${escapeHtml(emp.statusRemark || "")}</textarea></label><div class="modal-actions"><button class="btn primary" type="submit">Save</button><button class="btn" type="button" id="closeModal">Cancel</button></div></form>`;
+  modal.innerHTML = `<form class="modal employee-modal" id="employeeForm"><h2>${id ? "Edit" : "Add"} Employee</h2><label class="field"><span>ID</span><input id="empId" value="${emp.id}" ${id ? "readonly" : ""}></label><label class="field"><span>Name</span><input id="empName" value="${escapeHtml(emp.name)}" required></label><label class="field"><span>Email</span><input id="empEmail" type="email" value="${escapeHtml(emp.email)}" required></label><label class="field"><span>Password</span><input id="empPassword" value="${escapeHtml(emp.password)}" required></label><label class="field"><span class="label-row">Employee Type ${helpTip("Permanent is usually full-time long-term staff. Part-time and Contract employees can use multiple sessions so daily total hours can support payroll.")}</span><select id="empType"><option ${emp.employeeType === "Permanent" ? "selected" : ""}>Permanent</option><option ${emp.employeeType === "Part-time" ? "selected" : ""}>Part-time</option><option ${emp.employeeType === "Contract" ? "selected" : ""}>Contract</option><option ${emp.employeeType === "Intern" ? "selected" : ""}>Intern</option></select></label><label class="field"><span>Scheme</span><select id="empScheme">${["Permanent", "Part-time", "Contract", "Intern"].map((type) => `<option ${((emp.scheme || emp.employeeType) === type) ? "selected" : ""}>${type}</option>`).join("")}</select></label><label class="field"><span class="label-row">Attendance Mode ${helpTip("Single Daily allows one check-in per day. Multiple Sessions is not manually selected by session number; the system creates Session 1, Session 2 and so on automatically each day.")}</span><select id="empAttendanceMode"><option ${emp.attendanceMode === "Single Daily" ? "selected" : ""}>Single Daily</option><option ${emp.attendanceMode === "Multiple Sessions" ? "selected" : ""}>Multiple Sessions</option></select></label><label class="field"><span>Department</span><input id="empDept" value="${escapeHtml(emp.department)}"></label><label class="field"><span>Position</span><input id="empPos" value="${escapeHtml(emp.position)}"></label><label class="field"><span>Employment Date</span><input id="empEmploymentDate" type="date" value="${emp.employmentDate || today()}" required></label><label class="field"><span>Phone</span><input id="empPhone" value="${escapeHtml(emp.phone || "")}"></label><label class="field"><span>IC / Passport No.</span><input id="empIdNumber" value="${escapeHtml(emp.idNumber || "")}"></label><label class="field"><span>Emergency Contact</span><input id="empEmergency" value="${escapeHtml(emp.emergencyContact || "")}"></label><label class="field"><span>Vehicle Type</span><input id="empVehicleType" value="${escapeHtml(emp.vehicleType || "")}" placeholder="Car / Motorcycle / None"></label><label class="field"><span>Plate No.</span><input id="empPlate" value="${escapeHtml(emp.plateNo || "")}"></label><div class="form-divider wide"><strong>Contract Details</strong><small>For contract employees, the account automatically stops check-in after the contract end date unless admin resumes by setting a new end date.</small></div><label class="field"><span>Contract Start</span><input id="empContractStart" type="date" value="${emp.contractStart || emp.employmentDate || today()}"></label><label class="field"><span>Contract Period (Months)</span><input id="empContractMonths" type="number" min="1" value="${contractMonths}"></label><label class="field"><span>Contract End</span><input id="empContractEnd" type="date" value="${emp.contractEnd || ""}"></label><label class="field"><span class="label-row">Contract Status ${helpTip("Finish Contract sets the contract as ended. Resume Contract means set status Active and choose a new future contract end date.")}</span><select id="empContractStatus"><option value="Active" ${emp.contractStatus !== "Ended" ? "selected" : ""}>Active / Resumed</option><option value="Ended" ${emp.contractStatus === "Ended" ? "selected" : ""}>Finished Contract</option></select></label><label class="field wide"><span>Contract Remark</span><textarea id="empContractRemark" placeholder="Example: renewed until next year, early completion, resumed by management">${escapeHtml(emp.contractRemark || "")}</textarea></label><label class="field wide"><span>Address</span><textarea id="empAddress">${escapeHtml(emp.address || "")}</textarea></label><label class="field"><span>Status</span><select id="empStatus"><option ${emp.status === "Active" ? "selected" : ""}>Active</option><option ${emp.status === "Inactive" ? "selected" : ""}>Inactive</option></select></label><label class="field"><span>Status Remark / Proof</span><textarea id="empStatusRemark" placeholder="Required if status is changed">${escapeHtml(emp.statusRemark || "")}</textarea></label><div class="modal-actions"><button class="btn primary" type="submit">Save</button><button class="btn" type="button" id="closeModal">Cancel</button></div></form>`;
   modal.classList.add("show");
   document.querySelector("#closeModal").addEventListener("click", closeModal);
+  const syncContractEnd = () => {
+    const start = document.querySelector("#empContractStart").value;
+    const months = Number(document.querySelector("#empContractMonths").value || 0);
+    const end = document.querySelector("#empContractEnd");
+    if (!start || !months || document.activeElement === end) return;
+    const date = new Date(`${start}T00:00:00`);
+    date.setMonth(date.getMonth() + months);
+    date.setDate(date.getDate() - 1);
+    end.value = date.toISOString().slice(0, 10);
+  };
+  const syncContractFields = () => {
+    const isContract = document.querySelector("#empType").value === "Contract";
+    ["empContractStart", "empContractMonths", "empContractEnd", "empContractStatus", "empContractRemark"].forEach((fieldId) => {
+      const field = document.querySelector(`#${fieldId}`);
+      if (field) field.closest(".field")?.classList.toggle("soft-hidden", !isContract);
+    });
+    document.querySelector(".form-divider")?.classList.toggle("soft-hidden", !isContract);
+  };
+  document.querySelector("#empContractStart").addEventListener("change", syncContractEnd);
+  document.querySelector("#empContractMonths").addEventListener("input", syncContractEnd);
   document.querySelector("#empType").addEventListener("change", (event) => {
     document.querySelector("#empScheme").value = event.target.value;
     if (["Part-time", "Contract"].includes(event.target.value)) document.querySelector("#empAttendanceMode").value = "Multiple Sessions";
+    syncContractFields();
   });
+  syncContractFields();
   document.querySelector("#employeeForm").addEventListener("submit", (event) => {
     event.preventDefault();
     const previous = employee(id);
     const statusRemark = document.querySelector("#empStatusRemark").value.trim();
     const nextStatus = document.querySelector("#empStatus").value;
+    const nextType = document.querySelector("#empType").value;
+    const contractStatus = document.querySelector("#empContractStatus").value;
+    const contractEnd = document.querySelector("#empContractEnd").value;
+    const contractRemark = document.querySelector("#empContractRemark").value.trim();
     if (previous && previous.status !== nextStatus && !statusRemark) return toast("Status change requires a remark/proof.");
-    const payload = { id: document.querySelector("#empId").value.trim(), name: document.querySelector("#empName").value.trim(), email: document.querySelector("#empEmail").value.trim(), password: document.querySelector("#empPassword").value.trim() || "employee123", employeeType: document.querySelector("#empType").value, scheme: document.querySelector("#empScheme").value, attendanceMode: document.querySelector("#empAttendanceMode").value, department: document.querySelector("#empDept").value.trim(), position: document.querySelector("#empPos").value.trim(), employmentDate: document.querySelector("#empEmploymentDate").value, phone: document.querySelector("#empPhone").value.trim(), idNumber: document.querySelector("#empIdNumber").value.trim(), emergencyContact: document.querySelector("#empEmergency").value.trim(), vehicleType: document.querySelector("#empVehicleType").value.trim(), plateNo: document.querySelector("#empPlate").value.trim(), address: document.querySelector("#empAddress").value.trim(), status: nextStatus, statusRemark, statusUpdatedAt: previous && previous.status !== nextStatus ? new Date().toLocaleString("en-GB", { hour12: false }) : emp.statusUpdatedAt || "", statusUpdatedBy: previous && previous.status !== nextStatus ? session.name : emp.statusUpdatedBy || "" };
+    if (nextType === "Contract" && !contractEnd) return toast("Contract employee needs a contract end date.");
+    if (nextType === "Contract" && contractStatus === "Ended" && !contractRemark) return toast("Finishing a contract requires a contract remark.");
+    const payload = { id: document.querySelector("#empId").value.trim(), name: document.querySelector("#empName").value.trim(), email: document.querySelector("#empEmail").value.trim(), password: document.querySelector("#empPassword").value.trim() || "employee123", employeeType: nextType, scheme: document.querySelector("#empScheme").value, attendanceMode: document.querySelector("#empAttendanceMode").value, department: document.querySelector("#empDept").value.trim(), position: document.querySelector("#empPos").value.trim(), employmentDate: document.querySelector("#empEmploymentDate").value, phone: document.querySelector("#empPhone").value.trim(), idNumber: document.querySelector("#empIdNumber").value.trim(), emergencyContact: document.querySelector("#empEmergency").value.trim(), vehicleType: document.querySelector("#empVehicleType").value.trim(), plateNo: document.querySelector("#empPlate").value.trim(), contractStart: nextType === "Contract" ? document.querySelector("#empContractStart").value : "", contractEnd: nextType === "Contract" ? contractEnd : "", contractStatus: nextType === "Contract" ? contractStatus : "Active", contractRemark: nextType === "Contract" ? contractRemark : "", address: document.querySelector("#empAddress").value.trim(), status: nextStatus, statusRemark, statusUpdatedAt: previous && previous.status !== nextStatus ? new Date().toLocaleString("en-GB", { hour12: false }) : emp.statusUpdatedAt || "", statusUpdatedBy: previous && previous.status !== nextStatus ? session.name : emp.statusUpdatedBy || "" };
     if (!payload.id || !payload.name || !payload.email) return toast("Fill in employee ID, name, and email.");
     if (payload.password.length < 8) return toast("Employee password must be at least 8 characters.");
     const duplicateEmployeeId = state.employees.some((item) => item.id === payload.id && item.id !== id);
@@ -2313,7 +2382,10 @@ function openEmployeeModal(id) {
     const index = state.employees.findIndex((item) => item.id === payload.id);
     if (index >= 0) state.employees[index] = payload;
     else state.employees.push(payload);
-    addAudit("Employee saved", `${payload.name} record saved.${previous && previous.status !== nextStatus ? ` Status changed to ${nextStatus}. Remark: ${statusRemark}` : ""}`);
+    const statusChangeDetail = previous && previous.status !== nextStatus ? ` Status changed to ${nextStatus}. Remark: ${statusRemark}` : "";
+    const contractChanged = previous && (previous.contractEnd !== payload.contractEnd || previous.contractStatus !== payload.contractStatus || previous.contractRemark !== payload.contractRemark);
+    const contractDetail = contractChanged ? ` Contract ${payload.contractStatus.toLowerCase()} until ${payload.contractEnd || "-"}. Remark: ${payload.contractRemark || "-"}` : "";
+    addAudit("Employee saved", `${payload.name} record saved.${statusChangeDetail}${contractDetail}`);
     saveState("Employee updated.");
     closeModal();
     render();

@@ -146,6 +146,16 @@ main { min-width: 0; }
   background: #eef3f4;
   cursor: not-allowed;
 }
+
+.soft-hidden { display: none !important; }
+
+.form-divider {
+  padding: 10px 0 2px;
+  border-top: 1px solid var(--border);
+}
+
+.form-divider strong { display: block; color: var(--text); }
+.form-divider small { color: var(--muted); }
 .field textarea { min-height: 82px; resize: vertical; }
 .password-control {
   display: grid;
@@ -564,7 +574,7 @@ main { min-width: 0; }
 .calendar-cell.present { background: #e7f6ed; border-color: #b7dec8; }
 .calendar-cell.late { background: #fff3df; border-color: #e9cd91; }
 .calendar-cell.absent, .calendar-cell.rejected { background: #fff0f0; border-color: #eabbbb; }
-.calendar-cell.approved, .calendar-cell.wfh { background: #e7f0fa; border-color: #b8cfe5; }
+.calendar-cell.approved, .calendar-cell.wfh, .calendar-cell.business-trip { background: #e7f0fa; border-color: #b8cfe5; }
 .calendar-cell.holiday { background: #eee9fb; border-color: #c8bee8; }
 .calendar-cell.pending { background: #fff8e6; border-color: #e6d396; }
 .calendar-cell.off, .calendar-cell.empty, .calendar-cell.empty-cell { background: #eef3f4; color: var(--muted); }
