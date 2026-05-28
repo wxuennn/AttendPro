@@ -1,7 +1,7 @@
 const STORAGE_KEY = "attendpro-state-v2";
 const COMPANY_KEY_STORAGE = "attendpro-company-key";
 const DATASET_PASSWORD_STORAGE = "attendpro-dataset-password";
-const APP_VERSION = "20260528-attendance-contract-wfh";
+const APP_VERSION = "20260528-employment-periods";
 const APP_VERSION_STORAGE = "attendpro-app-version";
 const TAB_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const channel = "BroadcastChannel" in window ? new BroadcastChannel("attendpro-sync") : null;
@@ -178,7 +178,9 @@ function normalize(input) {
       contractStart: emp.contractStart || emp.employmentDate || "",
       contractEnd: emp.contractEnd || "",
       contractStatus: emp.contractStatus || (emp.employeeType === "Contract" && emp.contractEnd && emp.contractEnd < today() ? "Ended" : "Active"),
-      contractRemark: emp.contractRemark || ""
+      contractRemark: emp.contractRemark || "",
+      statusEffectiveDate: emp.statusEffectiveDate || emp.employmentDate || "",
+      activePeriods: normalizeActivePeriods(emp)
     })),
     attendance: (input.attendance || []).map((record) => ({
       ...record,
@@ -546,6 +548,65 @@ function sessionLabel(record, records = []) {
   return sameDayRecords.length > 1 ? `Session ${index >= 0 ? index + 1 : 1}` : "Session 1";
 }
 
+function dayBefore(dateValue) {
+  const date = new Date(`${dateValue}T00:00:00`);
+  date.setDate(date.getDate() - 1);
+  return localDateKey(date);
+}
+
+function activePeriodEnd(emp) {
+  if (!emp) return "";
+  if (emp.employeeType === "Contract" && emp.contractEnd) return emp.contractEnd;
+  return "";
+}
+
+function normalizeActivePeriods(emp = {}) {
+  if (Array.isArray(emp.activePeriods) && emp.activePeriods.length) {
+    return emp.activePeriods
+      .filter((period) => period?.from)
+      .map((period) => ({ from: period.from, to: period.to || "" }))
+      .sort((a, b) => a.from.localeCompare(b.from));
+  }
+  const from = emp.employmentDate || emp.contractStart || "";
+  if (!from) return [];
+  const statusDate = emp.statusEffectiveDate || today();
+  const endedByStatus = emp.status === "Inactive" ? dayBefore(statusDate) : "";
+  const endedByContract = emp.employeeType === "Contract" && emp.contractEnd && (emp.contractEnd < today() || emp.contractStatus === "Ended") ? emp.contractEnd : "";
+  const to = [endedByStatus, endedByContract].filter(Boolean).sort()[0] || activePeriodEnd(emp);
+  return [{ from, to }];
+}
+
+function nextActivePeriods(previous, payload, effectiveDate) {
+  let periods = previous ? normalizeActivePeriods(previous) : [];
+  const start = payload.employmentDate || payload.contractStart || effectiveDate || today();
+  if (!periods.length && start) periods = [{ from: start, to: "" }];
+  const closeCurrent = (endDate) => {
+    if (!endDate) return;
+    const closeDate = endDate < start ? start : endDate;
+    const last = periods[periods.length - 1];
+    if (last && (!last.to || last.to > closeDate)) last.to = closeDate;
+  };
+  const openCurrent = (fromDate) => {
+    const last = periods[periods.length - 1];
+    if (!last) {
+      periods.push({ from: fromDate, to: activePeriodEnd(payload) });
+      return;
+    }
+    if (last.to && last.to < fromDate) periods.push({ from: fromDate, to: activePeriodEnd(payload) });
+    else last.to = activePeriodEnd(payload);
+  };
+  if (payload.status === "Inactive") closeCurrent(dayBefore(effectiveDate || today()));
+  else openCurrent(effectiveDate || start);
+  if (payload.employeeType === "Contract") {
+    if (payload.contractStatus === "Ended") closeCurrent(payload.contractEnd || dayBefore(effectiveDate || today()));
+    else if (payload.contractEnd) {
+      const last = periods[periods.length - 1];
+      if (last && (!last.to || last.to < payload.contractEnd)) last.to = payload.contractEnd;
+    }
+  }
+  return periods.filter((period) => period.from && (!period.to || period.to >= period.from));
+}
+
 function calendarDayLabel(employeeId, dateValue, status) {
   const records = recordsForDate(employeeId, dateValue).filter((record) => record.checkIn);
   const totalMinutes = totalMinutesForRecords(records);
@@ -561,9 +622,21 @@ function isContractEnded(emp, dateValue = today()) {
   return Boolean(emp.contractEnd && emp.contractEnd < dateValue);
 }
 
+function effectiveEmployeeStatus(emp, dateValue = today()) {
+  if (!emp) return "Active";
+  if (emp.status === "Inactive" || isContractEnded(emp, dateValue) || !employeeActiveOnDate(emp, dateValue)) return "Inactive";
+  return "Active";
+}
+
 function isActiveEmployee(id = session?.id) {
   const emp = employee(id);
-  return !emp || (emp.status !== "Inactive" && !isContractEnded(emp));
+  return !emp || effectiveEmployeeStatus(emp) === "Active";
+}
+
+function employeeActiveOnDate(emp, dateValue) {
+  if (!emp) return true;
+  const periods = normalizeActivePeriods(emp);
+  return periods.some((period) => period.from <= dateValue && (!period.to || dateValue <= period.to));
 }
 
 function isWorkingDay(dateValue) {
@@ -774,8 +847,8 @@ function employmentDate(employeeId) {
 }
 
 function calendarStatus(employeeId, dateValue) {
-  const startDate = employmentDate(employeeId);
-  if (startDate && dateValue < startDate) return { label: "", type: "empty" };
+  const emp = employee(employeeId);
+  if (!employeeActiveOnDate(emp, dateValue)) return { label: "", type: "empty" };
   const records = attendanceForDate(employeeId, dateValue);
   if (records.length) {
     if (records.some((record) => record.status === "Public Holiday")) return { label: "Public Holiday", type: "holiday" };
@@ -1368,16 +1441,35 @@ function calendarPeriodDate() {
 }
 
 function calendarYearOptions(employeeId) {
-  const start = employmentDate(employeeId);
+  const emp = employee(employeeId);
+  const periods = normalizeActivePeriods(emp);
+  const start = periods[0]?.from || employmentDate(employeeId);
+  const lastPeriod = periods[periods.length - 1];
+  const end = lastPeriod?.to || today();
   const startYear = start ? new Date(`${start}T00:00:00`).getFullYear() : new Date().getFullYear();
+  const endYear = end ? new Date(`${end}T00:00:00`).getFullYear() : new Date().getFullYear();
   const currentYear = new Date().getFullYear();
-  return Array.from({ length: Math.max(1, currentYear - startYear + 1) }, (_, index) => startYear + index);
+  const lastYear = Math.min(currentYear, Math.max(startYear, endYear));
+  return Array.from({ length: Math.max(1, lastYear - startYear + 1) }, (_, index) => startYear + index);
+}
+
+function calendarMonthOptions(employeeId, year) {
+  const emp = employee(employeeId);
+  const periods = normalizeActivePeriods(emp);
+  const months = Array.from({ length: 12 }, (_, index) => ({ index, name: new Date(2026, index, 1).toLocaleDateString("en-GB", { month: "long" }) }));
+  const activeMonths = months.filter(({ index }) => {
+    const monthStart = localDateKey(new Date(year, index, 1));
+    const monthEnd = localDateKey(new Date(year, index + 1, 0));
+    return periods.some((period) => period.from <= monthEnd && (!period.to || period.to >= monthStart));
+  });
+  return activeMonths.length ? activeMonths : months;
 }
 
 function normalizeCalendarPeriod(employeeId) {
   const years = calendarYearOptions(employeeId);
   if (!years.includes(Number(selectedCalendarYear))) selectedCalendarYear = years.at(-1);
-  selectedCalendarMonth = Math.max(0, Math.min(11, Number(selectedCalendarMonth)));
+  const months = calendarMonthOptions(employeeId, selectedCalendarYear);
+  if (!months.some((month) => month.index === Number(selectedCalendarMonth))) selectedCalendarMonth = months[0]?.index ?? 0;
 }
 
 function calendarPanel(employeeId, admin = false) {
@@ -1385,9 +1477,9 @@ function calendarPanel(employeeId, admin = false) {
   normalizeCalendarPeriod(employeeId);
   const years = calendarYearOptions(employeeId);
   const date = calendarPeriodDate();
-  const months = Array.from({ length: 12 }, (_, index) => new Date(2026, index, 1).toLocaleDateString("en-GB", { month: "long" }));
+  const months = calendarMonthOptions(employeeId, selectedCalendarYear);
   const exportButtons = `<div class="calendar-export-actions"><span>Export</span><button class="btn" data-export-calendar="${employeeId}">Report</button><button class="btn" data-export-timesheet="${employeeId}">Timesheet</button>${admin ? `<button class="btn" data-export-calendar="all">All Reports</button><button class="btn" data-export-timesheet="all">All Timesheets</button>` : ""}</div>`;
-  return `<div class="calendar-toolbar"><div class="calendar-filters">${admin ? `<label class="search-field"><span>Employee</span><select class="select-control" id="calendarEmployee">${state.employees.map((emp) => `<option value="${emp.id}" ${emp.id === employeeId ? "selected" : ""}>${escapeHtml(emp.name)}</option>`).join("")}</select></label>` : ""}<label class="search-field"><span>Year</span><select class="select-control" id="calendarYear">${years.map((year) => `<option value="${year}" ${year === selectedCalendarYear ? "selected" : ""}>${year}</option>`).join("")}</select></label><label class="search-field"><span>Month</span><select class="select-control" id="calendarMonth">${months.map((month, index) => `<option value="${index}" ${index === selectedCalendarMonth ? "selected" : ""}>${month}</option>`).join("")}</select></label></div>${exportButtons}</div>${calendarForEmployee(employeeId, date)}`;
+  return `<div class="calendar-toolbar"><div class="calendar-filters">${admin ? `<label class="search-field"><span>Employee</span><select class="select-control" id="calendarEmployee">${state.employees.map((emp) => `<option value="${emp.id}" ${emp.id === employeeId ? "selected" : ""}>${escapeHtml(emp.name)}</option>`).join("")}</select></label>` : ""}<label class="search-field"><span>Year</span><select class="select-control" id="calendarYear">${years.map((year) => `<option value="${year}" ${year === selectedCalendarYear ? "selected" : ""}>${year}</option>`).join("")}</select></label><label class="search-field"><span>Month</span><select class="select-control" id="calendarMonth">${months.map((month) => `<option value="${month.index}" ${month.index === selectedCalendarMonth ? "selected" : ""}>${month.name}</option>`).join("")}</select></label></div>${exportButtons}</div>${calendarForEmployee(employeeId, date)}`;
 }
 
 function calendarMonthSummary(employeeId, dates = monthDates()) {
@@ -1482,7 +1574,7 @@ function leaveTable(leaves, admin) {
 
 function renderEmployees() {
   const employees = state.employees.filter((emp) => includesSearch([emp.id, emp.name, emp.email, emp.department, emp.position, emp.employmentDate, emp.employeeType, emp.attendanceMode, emp.scheme, emp.phone, emp.plateNo, emp.status, emp.statusRemark], "employees"));
-  return `<section class="search-panel">${searchBox("employees", "Search employees")}</section><section class="panel"><div class="panel-head"><h2>Employees</h2><div class="actions"><button class="btn primary" id="addEmployee">Add Employee</button><button class="btn" data-export-employees>Export CSV</button></div></div><div class="table-wrap record-scroll"><table class="employees-table"><thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Password</th><th>Type</th><th>Scheme</th><th>Attendance Mode</th><th>Department</th><th>Position</th><th>Joined</th><th>Contract End</th><th>Phone</th><th>Vehicle</th><th>Status</th><th>Remark</th><th>Action</th></tr></thead><tbody>${employees.map((emp) => `<tr><td>${emp.id}</td><td>${escapeHtml(emp.name)}</td><td>${escapeHtml(emp.email)}</td><td><code>${escapeHtml(emp.password)}</code></td><td>${escapeHtml(emp.employeeType)}</td><td>${escapeHtml(emp.scheme || emp.employeeType)}</td><td>${escapeHtml(emp.attendanceMode)}</td><td>${escapeHtml(emp.department)}</td><td>${escapeHtml(emp.position)}</td><td>${emp.employmentDate ? formatDate(emp.employmentDate) : "-"}</td><td>${emp.employeeType === "Contract" && emp.contractEnd ? `${formatDate(emp.contractEnd)} (${isContractEnded(emp) ? "Ended" : emp.contractStatus || "Active"})` : "-"}</td><td>${escapeHtml(emp.phone || "-")}</td><td>${escapeHtml([emp.vehicleType, emp.plateNo].filter(Boolean).join(" ") || "-")}</td><td>${isContractEnded(emp) ? "Contract Ended" : emp.status}</td><td>${escapeHtml(emp.statusRemark || emp.contractRemark || "-")}</td><td><button class="btn" data-edit="${emp.id}">Edit</button></td></tr>`).join("") || `<tr><td colspan="16" class="empty">No employees found.</td></tr>`}</tbody></table></div></section>`;
+  return `<section class="search-panel">${searchBox("employees", "Search employees")}</section><section class="panel"><div class="panel-head"><h2>Employees</h2><div class="actions"><button class="btn primary" id="addEmployee">Add Employee</button><button class="btn" data-export-employees>Export CSV</button></div></div><div class="table-wrap record-scroll"><table class="employees-table"><thead><tr><th>ID</th><th>Name</th><th>Email</th><th>Password</th><th>Type</th><th>Scheme</th><th>Attendance Mode</th><th>Department</th><th>Position</th><th>Joined</th><th>Contract End</th><th>Phone</th><th>Vehicle</th><th>Status</th><th>Remark</th><th>Action</th></tr></thead><tbody>${employees.map((emp) => `<tr><td>${emp.id}</td><td>${escapeHtml(emp.name)}</td><td>${escapeHtml(emp.email)}</td><td><code>${escapeHtml(emp.password)}</code></td><td>${escapeHtml(emp.employeeType)}</td><td>${escapeHtml(emp.scheme || emp.employeeType)}</td><td>${escapeHtml(emp.attendanceMode)}</td><td>${escapeHtml(emp.department)}</td><td>${escapeHtml(emp.position)}</td><td>${emp.employmentDate ? formatDate(emp.employmentDate) : "-"}</td><td>${emp.employeeType === "Contract" && emp.contractEnd ? `${formatDate(emp.contractEnd)} (${isContractEnded(emp) ? "Ended" : emp.contractStatus || "Active"})` : "-"}</td><td>${escapeHtml(emp.phone || "-")}</td><td>${escapeHtml([emp.vehicleType, emp.plateNo].filter(Boolean).join(" ") || "-")}</td><td><span class="${badgeClass(effectiveEmployeeStatus(emp))}">${effectiveEmployeeStatus(emp)}</span></td><td>${escapeHtml(emp.statusRemark || emp.contractRemark || (isContractEnded(emp) ? `Contract ended ${emp.contractEnd}` : "-"))}</td><td><button class="btn" data-edit="${emp.id}">Edit</button></td></tr>`).join("") || `<tr><td colspan="16" class="empty">No employees found.</td></tr>`}</tbody></table></div></section>`;
 }
 
 function renderAdmins() {
@@ -2160,7 +2252,7 @@ function exportRequests(scope) {
 }
 
 function exportEmployees() {
-  const rows = state.employees.map((emp) => [emp.id, emp.name, emp.email, emp.password, emp.employeeType, emp.scheme || emp.employeeType, emp.attendanceMode, emp.department, emp.position, emp.employmentDate || "", emp.contractStart || "", emp.contractEnd || "", emp.contractStatus || "", emp.contractRemark || "", emp.phone || "", emp.idNumber || "", emp.address || "", emp.emergencyContact || "", emp.vehicleType || "", emp.plateNo || "", isContractEnded(emp) ? "Contract Ended" : emp.status, emp.statusRemark || "", emp.statusUpdatedBy || "", emp.statusUpdatedAt || ""]);
+  const rows = state.employees.map((emp) => [emp.id, emp.name, emp.email, emp.password, emp.employeeType, emp.scheme || emp.employeeType, emp.attendanceMode, emp.department, emp.position, emp.employmentDate || "", emp.contractStart || "", emp.contractEnd || "", emp.contractStatus || "", emp.contractRemark || "", emp.phone || "", emp.idNumber || "", emp.address || "", emp.emergencyContact || "", emp.vehicleType || "", emp.plateNo || "", effectiveEmployeeStatus(emp), emp.statusRemark || "", emp.statusUpdatedBy || "", emp.statusUpdatedAt || ""]);
   downloadCSV(`${safeName(`${companyReportName()}-employee-list-${today()}`)}.csv`, ["ID", "Name", "Email", "Password", "Employee Type", "Scheme", "Attendance Mode", "Department", "Position", "Employment Date", "Contract Start", "Contract End", "Contract Status", "Contract Remark", "Phone", "IC / Passport No.", "Address", "Emergency Contact", "Vehicle Type", "Plate No", "Status", "Status Remark", "Updated By", "Updated At"], rows);
 }
 
@@ -2275,7 +2367,7 @@ function saveManualAttendance(event) {
   if (clearTimes && (manualCheckIn || manualCheckOut)) return toast("Absent and Public Holiday records should not include check-in/out time.");
   targets.forEach((emp) => {
     dates
-      .filter((dateValue) => !emp.employmentDate || dateValue >= emp.employmentDate)
+        .filter((dateValue) => employeeActiveOnDate(emp, dateValue))
       .forEach((dateValue) => {
         const existing = state.attendance.find((item) => item.employeeId === emp.id && item.date === dateValue);
         const dayCheckIns = recordsForDate(emp.id, dateValue).filter((record) => record.checkIn);
@@ -2330,7 +2422,7 @@ function openEmployeeModal(id) {
   const emp = employee(id) || { id: `EMP${String(state.employees.length + 1).padStart(3, "0")}`, name: "", email: "", password: "employee123", employeeType: "Permanent", scheme: "Permanent", attendanceMode: "Single Daily", department: "", position: "", employmentDate: today(), phone: "", idNumber: "", address: "", emergencyContact: "", vehicleType: "", plateNo: "", contractStart: today(), contractEnd: "", contractStatus: "Active", contractRemark: "", status: "Active", statusRemark: "" };
   const contractMonths = emp.contractStart && emp.contractEnd ? Math.max(1, (new Date(`${emp.contractEnd}T00:00:00`).getFullYear() - new Date(`${emp.contractStart}T00:00:00`).getFullYear()) * 12 + (new Date(`${emp.contractEnd}T00:00:00`).getMonth() - new Date(`${emp.contractStart}T00:00:00`).getMonth()) + 1) : "";
   const modal = document.querySelector("#modal");
-  modal.innerHTML = `<form class="modal employee-modal" id="employeeForm"><h2>${id ? "Edit" : "Add"} Employee</h2><label class="field"><span>ID</span><input id="empId" value="${emp.id}" ${id ? "readonly" : ""}></label><label class="field"><span>Name</span><input id="empName" value="${escapeHtml(emp.name)}" required></label><label class="field"><span>Email</span><input id="empEmail" type="email" value="${escapeHtml(emp.email)}" required></label><label class="field"><span>Password</span><input id="empPassword" value="${escapeHtml(emp.password)}" required></label><label class="field"><span class="label-row">Employee Type ${helpTip("Permanent is usually full-time long-term staff. Part-time and Contract employees can use multiple sessions so daily total hours can support payroll.")}</span><select id="empType"><option ${emp.employeeType === "Permanent" ? "selected" : ""}>Permanent</option><option ${emp.employeeType === "Part-time" ? "selected" : ""}>Part-time</option><option ${emp.employeeType === "Contract" ? "selected" : ""}>Contract</option><option ${emp.employeeType === "Intern" ? "selected" : ""}>Intern</option></select></label><label class="field"><span>Scheme</span><select id="empScheme">${["Permanent", "Part-time", "Contract", "Intern"].map((type) => `<option ${((emp.scheme || emp.employeeType) === type) ? "selected" : ""}>${type}</option>`).join("")}</select></label><label class="field"><span class="label-row">Attendance Mode ${helpTip("Single Daily allows one check-in per day. Multiple Sessions is not manually selected by session number; the system creates Session 1, Session 2 and so on automatically each day.")}</span><select id="empAttendanceMode"><option ${emp.attendanceMode === "Single Daily" ? "selected" : ""}>Single Daily</option><option ${emp.attendanceMode === "Multiple Sessions" ? "selected" : ""}>Multiple Sessions</option></select></label><label class="field"><span>Department</span><input id="empDept" value="${escapeHtml(emp.department)}"></label><label class="field"><span>Position</span><input id="empPos" value="${escapeHtml(emp.position)}"></label><label class="field"><span>Employment Date</span><input id="empEmploymentDate" type="date" value="${emp.employmentDate || today()}" required></label><label class="field"><span>Phone</span><input id="empPhone" value="${escapeHtml(emp.phone || "")}"></label><label class="field"><span>IC / Passport No.</span><input id="empIdNumber" value="${escapeHtml(emp.idNumber || "")}"></label><label class="field"><span>Emergency Contact</span><input id="empEmergency" value="${escapeHtml(emp.emergencyContact || "")}"></label><label class="field"><span>Vehicle Type</span><input id="empVehicleType" value="${escapeHtml(emp.vehicleType || "")}" placeholder="Car / Motorcycle / None"></label><label class="field"><span>Plate No.</span><input id="empPlate" value="${escapeHtml(emp.plateNo || "")}"></label><div class="form-divider wide"><strong>Contract Details</strong><small>For contract employees, the account automatically stops check-in after the contract end date unless admin resumes by setting a new end date.</small></div><label class="field"><span>Contract Start</span><input id="empContractStart" type="date" value="${emp.contractStart || emp.employmentDate || today()}"></label><label class="field"><span>Contract Period (Months)</span><input id="empContractMonths" type="number" min="1" value="${contractMonths}"></label><label class="field"><span>Contract End</span><input id="empContractEnd" type="date" value="${emp.contractEnd || ""}"></label><label class="field"><span class="label-row">Contract Status ${helpTip("Finish Contract sets the contract as ended. Resume Contract means set status Active and choose a new future contract end date.")}</span><select id="empContractStatus"><option value="Active" ${emp.contractStatus !== "Ended" ? "selected" : ""}>Active / Resumed</option><option value="Ended" ${emp.contractStatus === "Ended" ? "selected" : ""}>Finished Contract</option></select></label><label class="field wide"><span>Contract Remark</span><textarea id="empContractRemark" placeholder="Example: renewed until next year, early completion, resumed by management">${escapeHtml(emp.contractRemark || "")}</textarea></label><label class="field wide"><span>Address</span><textarea id="empAddress">${escapeHtml(emp.address || "")}</textarea></label><label class="field"><span>Status</span><select id="empStatus"><option ${emp.status === "Active" ? "selected" : ""}>Active</option><option ${emp.status === "Inactive" ? "selected" : ""}>Inactive</option></select></label><label class="field"><span>Status Remark / Proof</span><textarea id="empStatusRemark" placeholder="Required if status is changed">${escapeHtml(emp.statusRemark || "")}</textarea></label><div class="modal-actions"><button class="btn primary" type="submit">Save</button><button class="btn" type="button" id="closeModal">Cancel</button></div></form>`;
+  modal.innerHTML = `<form class="modal employee-modal" id="employeeForm"><h2>${id ? "Edit" : "Add"} Employee</h2><label class="field"><span>ID</span><input id="empId" value="${emp.id}" ${id ? "readonly" : ""}></label><label class="field"><span>Name</span><input id="empName" value="${escapeHtml(emp.name)}" required></label><label class="field"><span>Email</span><input id="empEmail" type="email" value="${escapeHtml(emp.email)}" required></label><label class="field"><span>Password</span><input id="empPassword" value="${escapeHtml(emp.password)}" required></label><label class="field"><span class="label-row">Employee Type ${helpTip("Permanent is usually full-time long-term staff. Part-time and Contract employees can use multiple sessions so daily total hours can support payroll.")}</span><select id="empType"><option ${emp.employeeType === "Permanent" ? "selected" : ""}>Permanent</option><option ${emp.employeeType === "Part-time" ? "selected" : ""}>Part-time</option><option ${emp.employeeType === "Contract" ? "selected" : ""}>Contract</option><option ${emp.employeeType === "Intern" ? "selected" : ""}>Intern</option></select></label><label class="field"><span>Scheme</span><select id="empScheme">${["Permanent", "Part-time", "Contract", "Intern"].map((type) => `<option ${((emp.scheme || emp.employeeType) === type) ? "selected" : ""}>${type}</option>`).join("")}</select></label><label class="field"><span class="label-row">Attendance Mode ${helpTip("Single Daily allows one check-in per day. Multiple Sessions is not manually selected by session number; the system creates Session 1, Session 2 and so on automatically each day.")}</span><select id="empAttendanceMode"><option ${emp.attendanceMode === "Single Daily" ? "selected" : ""}>Single Daily</option><option ${emp.attendanceMode === "Multiple Sessions" ? "selected" : ""}>Multiple Sessions</option></select></label><label class="field"><span>Department</span><input id="empDept" value="${escapeHtml(emp.department)}"></label><label class="field"><span>Position</span><input id="empPos" value="${escapeHtml(emp.position)}"></label><label class="field"><span>Employment Date</span><input id="empEmploymentDate" type="date" value="${emp.employmentDate || today()}" required></label><label class="field"><span>Phone</span><input id="empPhone" value="${escapeHtml(emp.phone || "")}"></label><label class="field"><span>IC / Passport No.</span><input id="empIdNumber" value="${escapeHtml(emp.idNumber || "")}"></label><label class="field"><span>Emergency Contact</span><input id="empEmergency" value="${escapeHtml(emp.emergencyContact || "")}"></label><label class="field"><span>Vehicle Type</span><input id="empVehicleType" value="${escapeHtml(emp.vehicleType || "")}" placeholder="Car / Motorcycle / None"></label><label class="field"><span>Plate No.</span><input id="empPlate" value="${escapeHtml(emp.plateNo || "")}"></label><div class="form-divider wide"><strong>Contract Details</strong><small>For contract employees, the account automatically becomes inactive after the contract end date. Extending the end date resumes the active period automatically.</small></div><label class="field"><span>Contract Start</span><input id="empContractStart" type="date" value="${emp.contractStart || emp.employmentDate || today()}"></label><label class="field"><span>Contract Period (Months)</span><input id="empContractMonths" type="number" min="1" value="${contractMonths}"></label><label class="field"><span>Contract End</span><input id="empContractEnd" type="date" value="${emp.contractEnd || ""}"></label><label class="field"><span class="label-row">Contract Status ${helpTip("Finished Contract closes the active period at the contract end date. Active / Resumed keeps the employee active until the selected contract end date.")}</span><select id="empContractStatus"><option value="Active" ${emp.contractStatus !== "Ended" ? "selected" : ""}>Active / Resumed</option><option value="Ended" ${emp.contractStatus === "Ended" ? "selected" : ""}>Finished Contract</option></select></label><label class="field wide"><span>Contract Remark</span><textarea id="empContractRemark" placeholder="Example: renewed until next year, early completion, resumed by management">${escapeHtml(emp.contractRemark || "")}</textarea></label><label class="field wide"><span>Address</span><textarea id="empAddress">${escapeHtml(emp.address || "")}</textarea></label><label class="field"><span>Status</span><select id="empStatus"><option ${emp.status === "Active" ? "selected" : ""}>Active</option><option ${emp.status === "Inactive" ? "selected" : ""}>Inactive</option></select></label><label class="field"><span class="label-row">Status Effective From ${helpTip("Calendar is counted only inside active employment periods. Before joining, after inactive date, and after contract end date will remain blank.")}</span><input id="empStatusEffectiveDate" type="date" value="${emp.statusEffectiveDate || today()}"></label><label class="field wide"><span>Status Remark / Proof</span><textarea id="empStatusRemark" placeholder="Required if status is changed">${escapeHtml(emp.statusRemark || "")}</textarea></label><div class="modal-actions"><button class="btn primary" type="submit">Save</button><button class="btn" type="button" id="closeModal">Cancel</button></div></form>`;
   modal.classList.add("show");
   document.querySelector("#closeModal").addEventListener("click", closeModal);
   const syncContractEnd = () => {
@@ -2351,12 +2443,27 @@ function openEmployeeModal(id) {
     });
     document.querySelector(".form-divider")?.classList.toggle("soft-hidden", !isContract);
   };
+  const syncContractStatus = () => {
+    if (document.querySelector("#empType").value !== "Contract") return;
+    const end = document.querySelector("#empContractEnd").value;
+    const contractStatus = document.querySelector("#empContractStatus").value;
+    const status = document.querySelector("#empStatus");
+    if (!end || !status) return;
+    if (contractStatus === "Ended" || end < today()) status.value = "Inactive";
+    if (contractStatus !== "Ended" && end >= today()) status.value = "Active";
+  };
   document.querySelector("#empContractStart").addEventListener("change", syncContractEnd);
-  document.querySelector("#empContractMonths").addEventListener("input", syncContractEnd);
+  document.querySelector("#empContractMonths").addEventListener("input", () => {
+    syncContractEnd();
+    syncContractStatus();
+  });
+  document.querySelector("#empContractEnd").addEventListener("change", syncContractStatus);
+  document.querySelector("#empContractStatus").addEventListener("change", syncContractStatus);
   document.querySelector("#empType").addEventListener("change", (event) => {
     document.querySelector("#empScheme").value = event.target.value;
     if (["Part-time", "Contract"].includes(event.target.value)) document.querySelector("#empAttendanceMode").value = "Multiple Sessions";
     syncContractFields();
+    syncContractStatus();
   });
   syncContractFields();
   document.querySelector("#employeeForm").addEventListener("submit", (event) => {
@@ -2368,10 +2475,16 @@ function openEmployeeModal(id) {
     const contractStatus = document.querySelector("#empContractStatus").value;
     const contractEnd = document.querySelector("#empContractEnd").value;
     const contractRemark = document.querySelector("#empContractRemark").value.trim();
+    const statusEffectiveDate = document.querySelector("#empStatusEffectiveDate").value || today();
     if (previous && previous.status !== nextStatus && !statusRemark) return toast("Status change requires a remark/proof.");
     if (nextType === "Contract" && !contractEnd) return toast("Contract employee needs a contract end date.");
     if (nextType === "Contract" && contractStatus === "Ended" && !contractRemark) return toast("Finishing a contract requires a contract remark.");
-    const payload = { id: document.querySelector("#empId").value.trim(), name: document.querySelector("#empName").value.trim(), email: document.querySelector("#empEmail").value.trim(), password: document.querySelector("#empPassword").value.trim() || "employee123", employeeType: nextType, scheme: document.querySelector("#empScheme").value, attendanceMode: document.querySelector("#empAttendanceMode").value, department: document.querySelector("#empDept").value.trim(), position: document.querySelector("#empPos").value.trim(), employmentDate: document.querySelector("#empEmploymentDate").value, phone: document.querySelector("#empPhone").value.trim(), idNumber: document.querySelector("#empIdNumber").value.trim(), emergencyContact: document.querySelector("#empEmergency").value.trim(), vehicleType: document.querySelector("#empVehicleType").value.trim(), plateNo: document.querySelector("#empPlate").value.trim(), contractStart: nextType === "Contract" ? document.querySelector("#empContractStart").value : "", contractEnd: nextType === "Contract" ? contractEnd : "", contractStatus: nextType === "Contract" ? contractStatus : "Active", contractRemark: nextType === "Contract" ? contractRemark : "", address: document.querySelector("#empAddress").value.trim(), status: nextStatus, statusRemark, statusUpdatedAt: previous && previous.status !== nextStatus ? new Date().toLocaleString("en-GB", { hour12: false }) : emp.statusUpdatedAt || "", statusUpdatedBy: previous && previous.status !== nextStatus ? session.name : emp.statusUpdatedBy || "" };
+    const contractAutoActive = nextStatus === "Active" && nextType === "Contract" && contractStatus !== "Ended" && contractEnd >= today();
+    const contractAutoInactive = nextType === "Contract" && contractEnd && contractEnd < today();
+    const finalStatus = contractAutoActive ? "Active" : contractAutoInactive ? "Inactive" : nextStatus;
+    const finalContractStatus = nextType === "Contract" ? (contractAutoInactive ? "Ended" : contractStatus) : "Active";
+    const payload = { id: document.querySelector("#empId").value.trim(), name: document.querySelector("#empName").value.trim(), email: document.querySelector("#empEmail").value.trim(), password: document.querySelector("#empPassword").value.trim() || "employee123", employeeType: nextType, scheme: document.querySelector("#empScheme").value, attendanceMode: document.querySelector("#empAttendanceMode").value, department: document.querySelector("#empDept").value.trim(), position: document.querySelector("#empPos").value.trim(), employmentDate: document.querySelector("#empEmploymentDate").value, phone: document.querySelector("#empPhone").value.trim(), idNumber: document.querySelector("#empIdNumber").value.trim(), emergencyContact: document.querySelector("#empEmergency").value.trim(), vehicleType: document.querySelector("#empVehicleType").value.trim(), plateNo: document.querySelector("#empPlate").value.trim(), contractStart: nextType === "Contract" ? document.querySelector("#empContractStart").value : "", contractEnd: nextType === "Contract" ? contractEnd : "", contractStatus: finalContractStatus, contractRemark: nextType === "Contract" ? contractRemark : "", address: document.querySelector("#empAddress").value.trim(), status: finalStatus, statusEffectiveDate, statusRemark, statusUpdatedAt: previous && previous.status !== finalStatus ? new Date().toLocaleString("en-GB", { hour12: false }) : emp.statusUpdatedAt || "", statusUpdatedBy: previous && previous.status !== finalStatus ? session.name : emp.statusUpdatedBy || "" };
+    payload.activePeriods = nextActivePeriods(previous, payload, statusEffectiveDate);
     if (!payload.id || !payload.name || !payload.email) return toast("Fill in employee ID, name, and email.");
     if (payload.password.length < 8) return toast("Employee password must be at least 8 characters.");
     const duplicateEmployeeId = state.employees.some((item) => item.id === payload.id && item.id !== id);
@@ -2382,7 +2495,7 @@ function openEmployeeModal(id) {
     const index = state.employees.findIndex((item) => item.id === payload.id);
     if (index >= 0) state.employees[index] = payload;
     else state.employees.push(payload);
-    const statusChangeDetail = previous && previous.status !== nextStatus ? ` Status changed to ${nextStatus}. Remark: ${statusRemark}` : "";
+    const statusChangeDetail = previous && previous.status !== payload.status ? ` Status changed to ${payload.status} from ${formatDate(statusEffectiveDate)}. Remark: ${statusRemark}` : "";
     const contractChanged = previous && (previous.contractEnd !== payload.contractEnd || previous.contractStatus !== payload.contractStatus || previous.contractRemark !== payload.contractRemark);
     const contractDetail = contractChanged ? ` Contract ${payload.contractStatus.toLowerCase()} until ${payload.contractEnd || "-"}. Remark: ${payload.contractRemark || "-"}` : "";
     addAudit("Employee saved", `${payload.name} record saved.${statusChangeDetail}${contractDetail}`);

@@ -372,6 +372,8 @@ main { min-width: 0; }
 .status-late { background: #ffe8d5; color: #93450b; }
 .status-absent, .status-rejected { background: #fde7e7; color: #9d3333; }
 .status-off-day-work, .status-wfh, .status-business-trip { background: #e5effa; color: #285b88; }
+.status-active { background: #dff4e7; color: #197342; }
+.status-inactive { background: #f4e2e0; color: #9a3328; }
 .status-public-holiday { background: #eee9fb; color: #594099; }
 .status-off-day { background: #eef2f3; color: #66747b; }
 .field small { color: var(--muted); line-height: 1.35; }
