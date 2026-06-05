@@ -1,7 +1,7 @@
 const STORAGE_KEY = "attendpro-state-v2";
 const COMPANY_KEY_STORAGE = "attendpro-company-key";
 const DATASET_PASSWORD_STORAGE = "attendpro-dataset-password";
-const APP_VERSION = "20260605-company-sync-hardening";
+const APP_VERSION = "20260605-targeted-announcements";
 const APP_VERSION_STORAGE = "attendpro-app-version";
 const TAB_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const channel = "BroadcastChannel" in window ? new BroadcastChannel("attendpro-sync") : null;
@@ -198,7 +198,9 @@ function normalize(input) {
         to: holiday.to || holiday.date || holiday.from,
         fullDay: holiday.fullDay !== false,
         startTime: holiday.startTime || "",
-        endTime: holiday.endTime || ""
+        endTime: holiday.endTime || "",
+        targetType: holiday.targetType || "all",
+        targetValues: holiday.targetValues || []
       })),
       publicHolidayExclusions: ((input.company || {}).publicHolidayExclusions || seedState.company.publicHolidayExclusions).map((holiday) => ({
         ...holiday,
@@ -206,7 +208,9 @@ function normalize(input) {
         to: holiday.to || holiday.date || holiday.from,
         fullDay: holiday.fullDay !== false,
         startTime: holiday.startTime || "",
-        endTime: holiday.endTime || ""
+        endTime: holiday.endTime || "",
+        targetType: holiday.targetType || "all",
+        targetValues: holiday.targetValues || []
       })),
       leavePolicies: (input.company || {}).leavePolicies || seedState.company.leavePolicies,
       schemes: { ...seedState.company.schemes, ...((input.company || {}).schemes || {}) },
@@ -258,6 +262,8 @@ function normalize(input) {
       eventFullDay: item.eventFullDay !== false,
       eventStartTime: item.eventStartTime || "",
       eventEndTime: item.eventEndTime || "",
+      targetType: item.targetType || "all",
+      targetValues: item.targetValues || [],
       readBy: item.readBy || []
     })),
     feedbacks: (input.feedbacks || []).map((item) => ({ ...item, status: item.status || "New" })),
@@ -749,6 +755,39 @@ function requestConflicts(newRequest, existingRequest) {
   return pair !== "Half Day Afternoon|Half Day Morning";
 }
 
+function uniqueSorted(values) {
+  return uniqueValues(values.map((value) => String(value || "").trim()).filter(Boolean)).sort((a, b) => a.localeCompare(b));
+}
+
+function employeeMatchesTarget(emp, targetType = "all", targetValues = []) {
+  if (!emp) return targetType === "all";
+  if (targetType === "all") return true;
+  const values = targetValues || [];
+  if (targetType === "department") return values.includes(emp.department || "");
+  if (targetType === "position") return values.includes(emp.position || "");
+  if (targetType === "employees") return values.includes(emp.id);
+  return true;
+}
+
+function itemTargetsEmployee(item, employeeId = session?.id) {
+  if (!employeeId) return true;
+  return employeeMatchesTarget(employee(employeeId), item.targetType || "all", item.targetValues || []);
+}
+
+function audienceLabel(item) {
+  const type = item.targetType || "all";
+  const values = item.targetValues || [];
+  if (type === "all") return "All employees";
+  if (type === "department") return `Department: ${values.join(", ") || "-"}`;
+  if (type === "position") return `Position: ${values.join(", ") || "-"}`;
+  if (type === "employees") return `Employees: ${values.map((id) => employee(id)?.name || id).join(", ") || "-"}`;
+  return "All employees";
+}
+
+function targetEmployees(targetType = "all", targetValues = []) {
+  return state.employees.filter((emp) => employeeMatchesTarget(emp, targetType, targetValues));
+}
+
 function workRequestNotificationCount() {
   if (!session) return 0;
   if (session.role === "admin") return state.leaves.filter((request) => request.status === "Pending").length;
@@ -761,7 +800,7 @@ function feedbackNotificationCount() {
 
 function announcementNotificationCount() {
   if (session?.role !== "employee") return 0;
-  return state.announcements.filter((item) => !(item.readBy || []).includes(session.id)).length;
+  return state.announcements.filter((item) => itemTargetsEmployee(item) && !(item.readBy || []).includes(session.id)).length;
 }
 
 function attendanceNotificationCount() {
@@ -795,6 +834,7 @@ function markAnnouncementsSeen() {
   if (session?.role !== "employee") return;
   let changed = false;
   state.announcements.forEach((item) => {
+    if (!itemTargetsEmployee(item)) return;
     item.readBy = item.readBy || [];
     if (!item.readBy.includes(session.id)) {
       item.readBy.push(session.id);
@@ -851,7 +891,7 @@ function requestCalendarLabel(request) {
 function leaveUnits(request) {
   if (requestDurationLabel(request).startsWith("Half Day")) return 0.5;
   return dateRange(request.from, request.to)
-    .filter((dateValue) => isWorkingDay(dateValue) && !isPublicHoliday(dateValue))
+    .filter((dateValue) => isWorkingDay(dateValue) && !isPublicHoliday(dateValue, request.employeeId))
     .length;
 }
 
@@ -863,7 +903,7 @@ function leaveUsed(employeeId, type, year = new Date().getFullYear()) {
         return sum + (new Date(`${leave.from}T00:00:00`).getFullYear() === year ? 0.5 : 0);
       }
       const daysInYear = dateRange(leave.from, leave.to).filter((dateValue) => new Date(`${dateValue}T00:00:00`).getFullYear() === year);
-      return sum + daysInYear.filter((dateValue) => isWorkingDay(dateValue) && !isPublicHoliday(dateValue)).length;
+      return sum + daysInYear.filter((dateValue) => isWorkingDay(dateValue) && !isPublicHoliday(dateValue, leave.employeeId)).length;
     }, 0);
 }
 
@@ -912,6 +952,8 @@ function autoPublicHolidaysForYear(year) {
     fullDay: true,
     startTime: "",
     endTime: "",
+    targetType: "all",
+    targetValues: [],
     source: "Auto"
   }));
 }
@@ -946,8 +988,9 @@ function holidayMatchesPeriod(holiday, eventFrom, eventTo, eventFullDay, eventSt
   return Boolean(from && to && fullyInsideRange && sameFullDayMode && sameTime);
 }
 
-function holidayExcludedOnDate(holiday, dateValue) {
+function holidayExcludedOnDate(holiday, dateValue, employeeId = "") {
   return (state.company.publicHolidayExclusions || []).some((exclusion) => {
+    if (employeeId && !itemTargetsEmployee(exclusion, employeeId)) return false;
     const from = exclusion.from || exclusion.date;
     const to = exclusion.to || exclusion.date || from;
     if (!from || !to || !dateInRange(dateValue, from, to)) return false;
@@ -960,16 +1003,16 @@ function holidayExcludedOnDate(holiday, dateValue) {
   });
 }
 
-function allPublicHolidaysForDate(dateValue) {
+function allPublicHolidaysForDate(dateValue, employeeId = "") {
   const year = new Date(`${dateValue}T00:00:00`).getFullYear();
   return [
     ...(state.company.publicHolidays || []),
     ...autoPublicHolidaysForYear(year)
-  ].filter((holiday) => !holidayExcludedOnDate(holiday, dateValue));
+  ].filter((holiday) => (!employeeId || itemTargetsEmployee(holiday, employeeId)) && !holidayExcludedOnDate(holiday, dateValue, employeeId));
 }
 
-function holidayForDate(dateValue, fullDayOnly = false) {
-  return allPublicHolidaysForDate(dateValue).find((holiday) => {
+function holidayForDate(dateValue, fullDayOnly = false, employeeId = "") {
+  return allPublicHolidaysForDate(dateValue, employeeId).find((holiday) => {
     const from = holiday.from || holiday.date;
     const to = holiday.to || holiday.date || from;
     if (!from || !to || !dateInRange(dateValue, from, to)) return false;
@@ -977,8 +1020,8 @@ function holidayForDate(dateValue, fullDayOnly = false) {
   });
 }
 
-function isPublicHoliday(dateValue) {
-  return Boolean(holidayForDate(dateValue, true));
+function isPublicHoliday(dateValue, employeeId = "") {
+  return Boolean(holidayForDate(dateValue, true, employeeId));
 }
 
 function holidayLabel(holiday) {
@@ -1018,7 +1061,7 @@ function calendarStatus(employeeId, dateValue) {
   const approved = approvedRequestForDate(employeeId, dateValue);
   const pending = requestsForDate(employeeId, dateValue).find((request) => request.status === "Pending");
   const rejected = requestsForDate(employeeId, dateValue).find((request) => request.status === "Rejected");
-  const holiday = holidayForDate(dateValue);
+  const holiday = holidayForDate(dateValue, false, employeeId);
   if (holiday) return { label: holidayLabel(holiday), type: "holiday" };
   if (approved) return { label: requestCalendarLabel(approved), type: approved.type.includes("WFH") ? "wfh" : approved.type === "Business Trip" ? "business-trip" : "approved" };
   if (pending) return { label: `Pending ${requestCalendarLabel(pending)}`, type: "pending" };
@@ -1702,13 +1745,16 @@ function renderLeaveApproval() {
 }
 
 function renderAnnouncements(admin) {
-  const items = state.announcements.slice().sort((a, b) => `${b.date}${b.time}`.localeCompare(`${a.date}${a.time}`));
-  const form = admin ? `<form class="panel form-grid" id="announcementForm"><div class="panel-head wide"><h2>Post Announcement</h2></div><label class="field"><span>Title</span><input id="announcementTitle" required></label><label class="field"><span>Post Date</span><input id="announcementDate" type="date" value="${today()}" required></label><label class="field"><span>Post Time</span><input id="announcementTime" type="time" value="${nowTime()}" required></label><label class="field"><span>Event From</span><input id="announcementEventFrom" type="date" value="${today()}" required></label><label class="field"><span>Event To</span><input id="announcementEventTo" type="date" value="${today()}" required></label><label class="field check-line"><input id="announcementFullDay" type="checkbox" checked><span>Full day event / holiday</span></label><label class="field"><span>Start Time</span><input id="announcementStartTime" type="time" disabled></label><label class="field"><span>End Time</span><input id="announcementEndTime" type="time" disabled></label><label class="field"><span>Calendar Action</span><select id="announcementHolidayAction"><option value="">Announcement only</option><option value="add">Add to calendar / holiday</option><option value="remove">Cancel from calendar / holiday</option></select><small>Full-day calendar items count as public holidays. Timed items appear on calendar but do not deduct leave.</small></label><label class="field wide"><span>Content</span><textarea id="announcementContent" required></textarea></label><button class="btn primary" type="submit">Publish</button></form>` : "";
+  const items = state.announcements.filter((item) => admin || itemTargetsEmployee(item)).slice().sort((a, b) => `${b.date}${b.time}`.localeCompare(`${a.date}${a.time}`));
+  const departments = uniqueSorted(state.employees.map((emp) => emp.department));
+  const positions = uniqueSorted(state.employees.map((emp) => emp.position));
+  const employeeOptions = state.employees.map((emp) => `<option value="${emp.id}">${escapeHtml(emp.name)} (${escapeHtml(emp.id)})</option>`).join("");
+  const form = admin ? `<form class="panel form-grid" id="announcementForm"><div class="panel-head wide"><h2>Post Announcement</h2></div><label class="field"><span>Title</span><input id="announcementTitle" required></label><label class="field"><span>Post Date</span><input id="announcementDate" type="date" value="${today()}" required></label><label class="field"><span>Post Time</span><input id="announcementTime" type="time" value="${nowTime()}" required></label><label class="field"><span>Send To</span><select id="announcementTargetType"><option value="all">All employees</option><option value="department">Specific department</option><option value="position">Specific position</option><option value="employees">Specific employees</option></select><small>Calendar actions follow this same target. Use this when only certain teams work during a holiday.</small></label><label class="field announcement-target announcement-target-department soft-hidden"><span>Department</span><select id="announcementDepartments" multiple size="4">${departments.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`).join("")}</select></label><label class="field announcement-target announcement-target-position soft-hidden"><span>Position</span><select id="announcementPositions" multiple size="4">${positions.map((value) => `<option value="${escapeHtml(value)}">${escapeHtml(value)}</option>`).join("")}</select></label><label class="field wide announcement-target announcement-target-employees soft-hidden"><span>Employees</span><select id="announcementEmployees" multiple size="6">${employeeOptions}</select></label><label class="field"><span>Event From</span><input id="announcementEventFrom" type="date" value="${today()}" required></label><label class="field"><span>Event To</span><input id="announcementEventTo" type="date" value="${today()}" required></label><label class="field check-line"><input id="announcementFullDay" type="checkbox" checked><span>Full day event / holiday</span></label><label class="field"><span>Start Time</span><input id="announcementStartTime" type="time" disabled></label><label class="field"><span>End Time</span><input id="announcementEndTime" type="time" disabled></label><label class="field"><span>Calendar Action</span><select id="announcementHolidayAction"><option value="">Announcement only</option><option value="add">Add to calendar / holiday</option><option value="remove">Cancel from calendar / holiday</option></select><small>Full-day calendar items count as public holidays. Timed items appear on calendar but do not deduct leave.</small></label><label class="field wide"><span>Content</span><textarea id="announcementContent" required></textarea></label><button class="btn primary" type="submit">Publish</button></form>` : "";
   return `${form}<section class="panel"><div class="panel-head"><h2>Announcements</h2></div><div class="announcement-list">${items.map((item) => {
     const eventFrom = item.eventFrom || item.holidayDate || item.date;
     const eventTo = item.eventTo || item.holidayDate || eventFrom;
     const fullDay = item.eventFullDay !== false;
-    return `<article class="announcement-item"><div><strong>${escapeHtml(item.title)}</strong><span>Posted ${formatDate(item.date)} ${escapeHtml(item.time || "")} | ${escapeHtml(item.author || "Admin")}</span></div><div class="announcement-meta"><span>${escapeHtml(periodLabel(eventFrom, eventTo, fullDay, item.eventStartTime, item.eventEndTime))}</span></div><p>${escapeHtml(item.content)}</p>${item.holidayAction ? `<span class="badge status-public-holiday">${item.holidayAction === "add" ? "Calendar updated" : "Calendar cancelled"} | ${escapeHtml(periodLabel(eventFrom, eventTo, fullDay, item.eventStartTime, item.eventEndTime))}</span>` : ""}</article>`;
+    return `<article class="announcement-item"><div><strong>${escapeHtml(item.title)}</strong><span>Posted ${formatDate(item.date)} ${escapeHtml(item.time || "")} | ${escapeHtml(item.author || "Admin")}</span></div><div class="announcement-meta"><span>${escapeHtml(periodLabel(eventFrom, eventTo, fullDay, item.eventStartTime, item.eventEndTime))}</span><span>${escapeHtml(audienceLabel(item))}</span></div><p>${escapeHtml(item.content)}</p>${item.holidayAction ? `<span class="badge status-public-holiday">${item.holidayAction === "add" ? "Calendar updated" : "Calendar cancelled"} | ${escapeHtml(periodLabel(eventFrom, eventTo, fullDay, item.eventStartTime, item.eventEndTime))}</span>` : ""}</article>`;
   }).join("") || `<p class="empty">No announcements yet.</p>`}</div></section>`;
 }
 
@@ -1821,11 +1867,13 @@ function bindEvents() {
   document.querySelector("#leaveForm")?.addEventListener("submit", submitLeave);
   document.querySelector("#feedbackForm")?.addEventListener("submit", submitFeedback);
   document.querySelector("#announcementForm")?.addEventListener("submit", submitAnnouncement);
+  document.querySelector("#announcementTargetType")?.addEventListener("change", syncAnnouncementTargetFields);
   document.querySelector("#announcementEventFrom")?.addEventListener("change", (event) => {
     const to = document.querySelector("#announcementEventTo");
     if (to && (!to.value || to.value < event.target.value)) to.value = event.target.value;
   });
   document.querySelector("#announcementFullDay")?.addEventListener("change", syncAnnouncementTimeFields);
+  syncAnnouncementTargetFields();
   syncAnnouncementTimeFields();
   document.querySelector("#profileForm")?.addEventListener("submit", saveProfile);
   document.querySelector("#settingsForm")?.addEventListener("submit", saveSettings);
@@ -1903,6 +1951,24 @@ function syncAnnouncementTimeFields() {
     start.value = "";
     end.value = "";
   }
+}
+
+function syncAnnouncementTargetFields() {
+  const targetType = document.querySelector("#announcementTargetType")?.value || "all";
+  document.querySelectorAll(".announcement-target").forEach((field) => field.classList.add("soft-hidden"));
+  document.querySelector(`.announcement-target-${targetType}`)?.classList.remove("soft-hidden");
+}
+
+function selectedValues(selector) {
+  return uniqueSorted(Array.from(document.querySelector(selector)?.selectedOptions || []).map((option) => option.value).filter(Boolean));
+}
+
+function selectedAnnouncementTarget() {
+  const targetType = document.querySelector("#announcementTargetType")?.value || "all";
+  if (targetType === "department") return { targetType, targetValues: selectedValues("#announcementDepartments") };
+  if (targetType === "position") return { targetType, targetValues: selectedValues("#announcementPositions") };
+  if (targetType === "employees") return { targetType, targetValues: selectedValues("#announcementEmployees") };
+  return { targetType: "all", targetValues: [] };
 }
 
 function ensureHelpBubble() {
@@ -2202,6 +2268,7 @@ function submitAnnouncement(event) {
   const eventFullDay = document.querySelector("#announcementFullDay").checked;
   const eventStartTime = document.querySelector("#announcementStartTime").value;
   const eventEndTime = document.querySelector("#announcementEndTime").value;
+  const target = selectedAnnouncementTarget();
   const failAnnouncement = (message) => {
     if (submitButton) submitButton.disabled = false;
     toast(message);
@@ -2211,6 +2278,9 @@ function submitAnnouncement(event) {
   if (eventTo < eventFrom) return failAnnouncement("Event To date must be after Event From date.");
   if (!eventFullDay && (!eventStartTime || !eventEndTime)) return failAnnouncement("Enter start and end time for non-full-day announcements.");
   if (!eventFullDay && eventFrom === eventTo && eventEndTime <= eventStartTime) return failAnnouncement("End time must be after start time.");
+  if (target.targetType !== "all" && !target.targetValues.length) return failAnnouncement("Select at least one announcement target.");
+  const affectedEmployees = targetEmployees(target.targetType, target.targetValues);
+  if (!affectedEmployees.length) return failAnnouncement("No employee matches this announcement target.");
   const item = {
     id: `ANN${Date.now()}`,
     title: document.querySelector("#announcementTitle").value.trim(),
@@ -2224,33 +2294,27 @@ function submitAnnouncement(event) {
     eventFullDay,
     eventStartTime: eventFullDay ? "" : eventStartTime,
     eventEndTime: eventFullDay ? "" : eventEndTime,
+    targetType: target.targetType,
+    targetValues: target.targetValues,
     holidayAction,
     holidayDate: eventFrom
   };
   if (!item.title || !item.content) return failAnnouncement("Fill in announcement title and content.");
   if (holidayAction === "remove") {
-    const filteredHolidays = state.company.publicHolidays.filter((holiday) => {
-      return !holidayMatchesPeriod(holiday, eventFrom, eventTo, eventFullDay, item.eventStartTime, item.eventEndTime);
+    const matchingHolidayForTarget = dateRange(eventFrom, eventTo).some((dateValue) => {
+      return affectedEmployees.some((emp) => allPublicHolidaysForDate(dateValue, emp.id).some((holiday) => holidayMatchesPeriod(holiday, eventFrom, eventTo, eventFullDay, item.eventStartTime, item.eventEndTime)));
     });
-    const removedManualHoliday = filteredHolidays.length !== state.company.publicHolidays.length;
-    const matchingAutoHoliday = dateRange(eventFrom, eventTo).some((dateValue) => {
-      const year = new Date(`${dateValue}T00:00:00`).getFullYear();
-      return autoPublicHolidaysForYear(year).some((holiday) => holidayMatchesPeriod(holiday, eventFrom, eventTo, eventFullDay, item.eventStartTime, item.eventEndTime));
-    });
-    if (!removedManualHoliday && !matchingAutoHoliday) return failAnnouncement("No matching calendar holiday/event found for that range and time.");
-    state.company.publicHolidays = filteredHolidays;
-    if (matchingAutoHoliday) {
-      state.company.publicHolidayExclusions = state.company.publicHolidayExclusions || [];
-      const exclusionExists = state.company.publicHolidayExclusions.some((holiday) => holidayMatchesPeriod(holiday, eventFrom, eventTo, eventFullDay, item.eventStartTime, item.eventEndTime));
-      if (!exclusionExists) state.company.publicHolidayExclusions.push({ id: `HEX${Date.now()}`, announcementId: item.id, from: eventFrom, to: eventTo, title: item.title, fullDay: eventFullDay, startTime: item.eventStartTime, endTime: item.eventEndTime });
-    }
+    if (!matchingHolidayForTarget) return failAnnouncement("No matching calendar holiday/event found for the selected target.");
+    state.company.publicHolidayExclusions = state.company.publicHolidayExclusions || [];
+    const exclusionExists = state.company.publicHolidayExclusions.some((holiday) => holidayMatchesPeriod(holiday, eventFrom, eventTo, eventFullDay, item.eventStartTime, item.eventEndTime) && holiday.targetType === item.targetType && JSON.stringify(holiday.targetValues || []) === JSON.stringify(item.targetValues || []));
+    if (!exclusionExists) state.company.publicHolidayExclusions.push({ id: `HEX${Date.now()}`, announcementId: item.id, from: eventFrom, to: eventTo, title: item.title, fullDay: eventFullDay, startTime: item.eventStartTime, endTime: item.eventEndTime, targetType: item.targetType, targetValues: item.targetValues });
   }
   if (holidayAction === "add") {
     const exists = state.company.publicHolidays.some((holiday) => holiday.announcementId === item.id);
-    if (!exists) state.company.publicHolidays.push({ id: `HOL${Date.now()}`, announcementId: item.id, from: eventFrom, to: eventTo, title: item.title, fullDay: eventFullDay, startTime: item.eventStartTime, endTime: item.eventEndTime });
+    if (!exists) state.company.publicHolidays.push({ id: `HOL${Date.now()}`, announcementId: item.id, from: eventFrom, to: eventTo, title: item.title, fullDay: eventFullDay, startTime: item.eventStartTime, endTime: item.eventEndTime, targetType: item.targetType, targetValues: item.targetValues });
   }
   state.announcements.unshift(item);
-  addAudit("Announcement published", `${session.name} published ${item.title} for ${periodLabel(eventFrom, eventTo, eventFullDay, item.eventStartTime, item.eventEndTime)}${holidayAction ? ` and ${holidayAction === "add" ? "added" : "cancelled"} calendar holiday/event` : ""}.`);
+  addAudit("Announcement published", `${session.name} published ${item.title} to ${audienceLabel(item)} for ${periodLabel(eventFrom, eventTo, eventFullDay, item.eventStartTime, item.eventEndTime)}${holidayAction ? ` and ${holidayAction === "add" ? "added" : "cancelled"} calendar holiday/event` : ""}.`);
   saveState("Announcement published.");
   render();
   toast("Announcement published.");
