@@ -1,7 +1,7 @@
 const STORAGE_KEY = "attendpro-state-v2";
 const COMPANY_KEY_STORAGE = "attendpro-company-key";
 const DATASET_PASSWORD_STORAGE = "attendpro-dataset-password";
-const APP_VERSION = "20260605-future-public-holiday-sync";
+const APP_VERSION = "20260605-company-sync-hardening";
 const APP_VERSION_STORAGE = "attendpro-app-version";
 const TAB_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const channel = "BroadcastChannel" in window ? new BroadcastChannel("attendpro-sync") : null;
@@ -357,7 +357,7 @@ async function mergeWithRemoteState(local, previousState = null) {
     const deletedAdminIds = uniqueValues([...remote.deletedAdminIds, ...local.deletedAdminIds]);
     return normalize({
       ...remote,
-      company: objectChanged(local.company, previous.company) ? local.company : remote.company,
+      company: mergeCompany(remote.company, local.company, previous.company),
       datasetPassword: local.datasetPassword,
       admins: mergeChangedById(remote.admins, local.admins, previous.admins).filter((admin) => !deletedAdminIds.includes(admin.id)),
       employees: mergeChangedById(remote.employees, local.employees, previous.employees),
@@ -372,6 +372,34 @@ async function mergeWithRemoteState(local, previousState = null) {
   } catch {
     return null;
   }
+}
+
+function mergeCompany(remoteCompany = {}, localCompany = {}, previousCompany = {}) {
+  const remote = normalize({ company: remoteCompany }).company;
+  const local = normalize({ company: localCompany }).company;
+  const previous = normalize({ company: previousCompany }).company;
+  const localChanged = objectChanged(local, previous);
+  const base = localChanged ? local : remote;
+  const merged = {
+    ...base,
+    publicHolidays: mergeChangedById(remote.publicHolidays, local.publicHolidays, previous.publicHolidays),
+    publicHolidayExclusions: mergeChangedById(remote.publicHolidayExclusions, local.publicHolidayExclusions, previous.publicHolidayExclusions),
+    autoHolidayCache: mergeHolidayCache(remote.autoHolidayCache, local.autoHolidayCache)
+  };
+  return merged;
+}
+
+function mergeHolidayCache(remoteCache = {}, localCache = {}) {
+  const merged = { ...(remoteCache || {}) };
+  Object.entries(localCache || {}).forEach(([year, holidays]) => {
+    const existing = Array.isArray(merged[year]) ? merged[year] : [];
+    const byDate = new Map(existing.map((holiday) => [holiday.date, holiday]));
+    (Array.isArray(holidays) ? holidays : []).forEach((holiday) => {
+      if (holiday?.date) byDate.set(holiday.date, holiday);
+    });
+    merged[year] = Array.from(byDate.values()).sort((a, b) => String(a.date).localeCompare(String(b.date)));
+  });
+  return merged;
 }
 
 function mergeChangedById(remoteItems = [], localItems = [], previousItems = []) {
@@ -2213,7 +2241,8 @@ function submitAnnouncement(event) {
     state.company.publicHolidays = filteredHolidays;
     if (matchingAutoHoliday) {
       state.company.publicHolidayExclusions = state.company.publicHolidayExclusions || [];
-      state.company.publicHolidayExclusions.push({ id: `HEX${Date.now()}`, announcementId: item.id, from: eventFrom, to: eventTo, title: item.title, fullDay: eventFullDay, startTime: item.eventStartTime, endTime: item.eventEndTime });
+      const exclusionExists = state.company.publicHolidayExclusions.some((holiday) => holidayMatchesPeriod(holiday, eventFrom, eventTo, eventFullDay, item.eventStartTime, item.eventEndTime));
+      if (!exclusionExists) state.company.publicHolidayExclusions.push({ id: `HEX${Date.now()}`, announcementId: item.id, from: eventFrom, to: eventTo, title: item.title, fullDay: eventFullDay, startTime: item.eventStartTime, endTime: item.eventEndTime });
     }
   }
   if (holidayAction === "add") {
