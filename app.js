@@ -1,7 +1,7 @@
 const STORAGE_KEY = "attendpro-state-v2";
 const COMPANY_KEY_STORAGE = "attendpro-company-key";
 const DATASET_PASSWORD_STORAGE = "attendpro-dataset-password";
-const APP_VERSION = "20260605-attendance-date-calendar-sync";
+const APP_VERSION = "20260605-auto-public-holidays";
 const APP_VERSION_STORAGE = "attendpro-app-version";
 const TAB_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const channel = "BroadcastChannel" in window ? new BroadcastChannel("attendpro-sync") : null;
@@ -28,6 +28,9 @@ const seedState = {
     officeLongitude: 101.6869,
     officeRadius: 300,
     autoCheckout: false,
+    autoPublicHolidays: true,
+    holidayCountry: "Malaysia",
+    holidayRegion: "National",
     publicHolidays: [],
     leavePolicies: [
       { type: "Annual Leave", days: 14, expires: "12-31" },
@@ -75,6 +78,30 @@ let currentDistanceText = "Not checked";
 const searchTerms = {};
 
 const app = document.querySelector("#app");
+
+const AUTO_PUBLIC_HOLIDAYS = {
+  Malaysia: {
+    National: {
+      2026: [
+        { date: "2026-02-17", title: "Chinese New Year" },
+        { date: "2026-02-18", title: "Chinese New Year Holiday" },
+        { date: "2026-03-21", title: "Hari Raya Aidilfitri" },
+        { date: "2026-03-22", title: "Hari Raya Aidilfitri Holiday" },
+        { date: "2026-03-23", title: "Hari Raya Aidilfitri Holiday" },
+        { date: "2026-05-01", title: "Labour Day" },
+        { date: "2026-05-27", title: "Hari Raya Haji" },
+        { date: "2026-05-31", title: "Wesak Day" },
+        { date: "2026-06-01", title: "Birthday of SPB Yang di-Pertuan Agong" },
+        { date: "2026-06-17", title: "Awal Muharram" },
+        { date: "2026-08-25", title: "Maulidur Rasul" },
+        { date: "2026-08-31", title: "National Day" },
+        { date: "2026-09-16", title: "Malaysia Day" },
+        { date: "2026-11-08", title: "Deepavali" },
+        { date: "2026-12-25", title: "Christmas Day" }
+      ]
+    }
+  }
+};
 
 function firebaseConfig() {
   return window.ATTENDPRO_FIREBASE || null;
@@ -143,6 +170,9 @@ function normalize(input) {
       codeSecret: (input.company || {}).codeSecret || legacyPolicy.onsiteSecret || seedState.company.codeSecret,
       codeInterval: Number((input.company || {}).codeInterval ?? legacyPolicy.codeIntervalSeconds ?? seedState.company.codeInterval),
       autoCheckout: Boolean((input.company || {}).autoCheckout),
+      autoPublicHolidays: (input.company || {}).autoPublicHolidays !== false,
+      holidayCountry: (input.company || {}).holidayCountry || seedState.company.holidayCountry,
+      holidayRegion: (input.company || {}).holidayRegion || seedState.company.holidayRegion,
       publicHolidays: ((input.company || {}).publicHolidays || seedState.company.publicHolidays).map((holiday) => ({
         ...holiday,
         from: holiday.from || holiday.date,
@@ -814,8 +844,32 @@ function dateInRange(dateValue, from, to) {
   return dateValue >= from && dateValue <= to;
 }
 
+function autoPublicHolidaysForYear(year) {
+  if (state.company.autoPublicHolidays === false) return [];
+  const country = state.company.holidayCountry || "Malaysia";
+  const region = state.company.holidayRegion || "National";
+  return (AUTO_PUBLIC_HOLIDAYS[country]?.[region]?.[year] || []).map((holiday) => ({
+    id: `AUTO-${country}-${region}-${holiday.date}`,
+    from: holiday.date,
+    to: holiday.date,
+    title: holiday.title,
+    fullDay: true,
+    startTime: "",
+    endTime: "",
+    source: "Auto"
+  }));
+}
+
+function allPublicHolidaysForDate(dateValue) {
+  const year = new Date(`${dateValue}T00:00:00`).getFullYear();
+  return [
+    ...(state.company.publicHolidays || []),
+    ...autoPublicHolidaysForYear(year)
+  ];
+}
+
 function holidayForDate(dateValue, fullDayOnly = false) {
-  return (state.company.publicHolidays || []).find((holiday) => {
+  return allPublicHolidaysForDate(dateValue).find((holiday) => {
     const from = holiday.from || holiday.date;
     const to = holiday.to || holiday.date || from;
     if (!from || !to || !dateInRange(dateValue, from, to)) return false;
@@ -1627,6 +1681,8 @@ function renderSettings() {
       <label class="field"><span>Office Longitude</span><input id="officeLongitude" type="number" step="0.000001" value="${state.company.officeLongitude}" required></label>
       <label class="field"><span class="label-row">Allowed Radius (m) ${helpTip("Employees must be inside this GPS radius to check in by QR or manual code. Use a larger radius only if the office GPS is unstable.")}</span><input id="officeRadius" type="number" min="20" max="5000" step="10" value="${state.company.officeRadius}" required></label>
       <label class="field check-line wide"><input id="autoCheckout" type="checkbox" ${state.company.autoCheckout ? "checked" : ""}><span>Auto check-out when employee leaves GPS radius ${helpTip("Works while the employee website is open and location permission remains allowed. Browsers cannot reliably track location after the tab/app is fully closed.")}</span></label>
+      <label class="field check-line wide"><input id="autoPublicHolidays" type="checkbox" ${state.company.autoPublicHolidays !== false ? "checked" : ""}><span>Auto Malaysia national public holidays ${helpTip("Adds Malaysia national public holidays to every employee calendar automatically. Admin can still add company-specific or state-specific holidays through Announcements.")}</span></label>
+      <div class="field wide dataset-card"><span>Holiday Source</span><strong>${escapeHtml(state.company.holidayCountry || "Malaysia")} - ${escapeHtml(state.company.holidayRegion || "National")}</strong><small>Automatic list currently covers Malaysia national public holidays for 2026. State holidays and company replacement days can be added by admin announcements.</small></div>
       <div class="field wide settings-block"><span>Leave Entitlement Per Year</span><div class="settings-grid">${leavePolicies.map((policy, index) => `<label class="field"><span>${escapeHtml(policy.type)} Days</span><input class="leave-days" data-leave-index="${index}" type="number" min="0" step="0.5" value="${policy.days}"></label><label class="field"><span>${escapeHtml(policy.type)} Expiry</span><input class="leave-expiry" data-leave-index="${index}" placeholder="MM-DD" value="${escapeHtml(policy.expires || "12-31")}"></label>`).join("")}</div></div>
       <div class="field wide settings-block"><span>Employee Schemes</span><div class="settings-grid">${schemeTypes.map((type) => {
         const scheme = state.company.schemes?.[type] || {};
@@ -2204,6 +2260,9 @@ function saveSettings(event) {
   state.company.officeLongitude = Number(document.querySelector("#officeLongitude").value);
   state.company.officeRadius = Number(document.querySelector("#officeRadius").value);
   state.company.autoCheckout = document.querySelector("#autoCheckout").checked;
+  state.company.autoPublicHolidays = document.querySelector("#autoPublicHolidays").checked;
+  state.company.holidayCountry = state.company.holidayCountry || "Malaysia";
+  state.company.holidayRegion = state.company.holidayRegion || "National";
   state.company.leavePolicies = (state.company.leavePolicies || seedState.company.leavePolicies).map((policy, index) => ({
     ...policy,
     days: Number(document.querySelector(`.leave-days[data-leave-index="${index}"]`).value || 0),
