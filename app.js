@@ -1,7 +1,7 @@
 const STORAGE_KEY = "attendpro-state-v2";
 const COMPANY_KEY_STORAGE = "attendpro-company-key";
 const DATASET_PASSWORD_STORAGE = "attendpro-dataset-password";
-const APP_VERSION = "20260528-employment-periods";
+const APP_VERSION = "20260605-attendance-date-calendar-sync";
 const APP_VERSION_STORAGE = "attendpro-app-version";
 const TAB_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const channel = "BroadcastChannel" in window ? new BroadcastChannel("attendpro-sync") : null;
@@ -1472,6 +1472,15 @@ function normalizeCalendarPeriod(employeeId) {
   if (!months.some((month) => month.index === Number(selectedCalendarMonth))) selectedCalendarMonth = months[0]?.index ?? 0;
 }
 
+function setCalendarPeriodFromDate(dateValue, employeeId = selectedCalendarEmployee) {
+  if (!dateValue) return;
+  const date = new Date(`${dateValue}T00:00:00`);
+  if (Number.isNaN(date.getTime())) return;
+  selectedCalendarYear = date.getFullYear();
+  selectedCalendarMonth = date.getMonth();
+  normalizeCalendarPeriod(employeeId);
+}
+
 function calendarPanel(employeeId, admin = false) {
   if (!employeeId) return `<p class="empty">No employee selected.</p>`;
   normalizeCalendarPeriod(employeeId);
@@ -1702,11 +1711,12 @@ function bindEvents() {
   document.querySelector("#attendanceEmployee")?.addEventListener("change", (event) => {
     selectedAttendanceEmployee = event.target.value;
     selectedCalendarEmployee = event.target.value;
-    normalizeCalendarPeriod(selectedCalendarEmployee);
+    setCalendarPeriodFromDate(selectedAttendanceDate, selectedCalendarEmployee);
     render();
   });
   document.querySelector("#attendanceDate")?.addEventListener("change", (event) => {
     selectedAttendanceDate = event.target.value || today();
+    setCalendarPeriodFromDate(selectedAttendanceDate, selectedCalendarEmployee);
     render();
   });
   document.querySelector("#updateDistance")?.addEventListener("click", updateEmployeeDistance);
