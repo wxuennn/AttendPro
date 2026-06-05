@@ -1,7 +1,7 @@
 const STORAGE_KEY = "attendpro-state-v2";
 const COMPANY_KEY_STORAGE = "attendpro-company-key";
 const DATASET_PASSWORD_STORAGE = "attendpro-dataset-password";
-const APP_VERSION = "20260605-auto-public-holidays";
+const APP_VERSION = "20260605-future-public-holiday-sync";
 const APP_VERSION_STORAGE = "attendpro-app-version";
 const TAB_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const channel = "BroadcastChannel" in window ? new BroadcastChannel("attendpro-sync") : null;
@@ -31,7 +31,9 @@ const seedState = {
     autoPublicHolidays: true,
     holidayCountry: "Malaysia",
     holidayRegion: "National",
+    autoHolidayCache: {},
     publicHolidays: [],
+    publicHolidayExclusions: [],
     leavePolicies: [
       { type: "Annual Leave", days: 14, expires: "12-31" },
       { type: "Medical Leave", days: 14, expires: "12-31" },
@@ -76,6 +78,7 @@ let geofenceWatchId = null;
 let geofenceCheckoutBusy = false;
 let currentDistanceText = "Not checked";
 const searchTerms = {};
+const holidayFetchYears = new Set();
 
 const app = document.querySelector("#app");
 
@@ -98,6 +101,21 @@ const AUTO_PUBLIC_HOLIDAYS = {
         { date: "2026-09-16", title: "Malaysia Day" },
         { date: "2026-11-08", title: "Deepavali" },
         { date: "2026-12-25", title: "Christmas Day" }
+      ],
+      2027: [
+        { date: "2027-02-06", title: "Chinese New Year" },
+        { date: "2027-03-09", title: "Hari Raya Aidilfitri" },
+        { date: "2027-03-10", title: "Hari Raya Aidilfitri Holiday" },
+        { date: "2027-05-01", title: "Labour Day" },
+        { date: "2027-05-16", title: "Hari Raya Haji" },
+        { date: "2027-05-20", title: "Wesak Day" },
+        { date: "2027-06-06", title: "Awal Muharram" },
+        { date: "2027-06-07", title: "Birthday of SPB Yang di-Pertuan Agong" },
+        { date: "2027-08-15", title: "Maulidur Rasul" },
+        { date: "2027-08-31", title: "National Day" },
+        { date: "2027-09-16", title: "Malaysia Day" },
+        { date: "2027-10-29", title: "Deepavali" },
+        { date: "2027-12-25", title: "Christmas Day" }
       ]
     }
   }
@@ -173,7 +191,16 @@ function normalize(input) {
       autoPublicHolidays: (input.company || {}).autoPublicHolidays !== false,
       holidayCountry: (input.company || {}).holidayCountry || seedState.company.holidayCountry,
       holidayRegion: (input.company || {}).holidayRegion || seedState.company.holidayRegion,
+      autoHolidayCache: (input.company || {}).autoHolidayCache || seedState.company.autoHolidayCache,
       publicHolidays: ((input.company || {}).publicHolidays || seedState.company.publicHolidays).map((holiday) => ({
+        ...holiday,
+        from: holiday.from || holiday.date,
+        to: holiday.to || holiday.date || holiday.from,
+        fullDay: holiday.fullDay !== false,
+        startTime: holiday.startTime || "",
+        endTime: holiday.endTime || ""
+      })),
+      publicHolidayExclusions: ((input.company || {}).publicHolidayExclusions || seedState.company.publicHolidayExclusions).map((holiday) => ({
         ...holiday,
         from: holiday.from || holiday.date,
         to: holiday.to || holiday.date || holiday.from,
@@ -848,7 +875,8 @@ function autoPublicHolidaysForYear(year) {
   if (state.company.autoPublicHolidays === false) return [];
   const country = state.company.holidayCountry || "Malaysia";
   const region = state.company.holidayRegion || "National";
-  return (AUTO_PUBLIC_HOLIDAYS[country]?.[region]?.[year] || []).map((holiday) => ({
+  const holidays = state.company.autoHolidayCache?.[year] || AUTO_PUBLIC_HOLIDAYS[country]?.[region]?.[year] || [];
+  return holidays.map((holiday) => ({
     id: `AUTO-${country}-${region}-${holiday.date}`,
     from: holiday.date,
     to: holiday.date,
@@ -860,12 +888,56 @@ function autoPublicHolidaysForYear(year) {
   }));
 }
 
+async function ensureAutoPublicHolidaysForYear(year) {
+  if (state.company.autoPublicHolidays === false) return;
+  if (state.company.autoHolidayCache?.[year]?.length) return;
+  if (holidayFetchYears.has(year)) return;
+  holidayFetchYears.add(year);
+  try {
+    const response = await fetch(`https://date.nager.at/api/v3/PublicHolidays/${year}/MY`, { cache: "no-store" });
+    if (!response.ok) return;
+    const items = await response.json();
+    const holidays = items
+      .filter((item) => !item.counties || !item.counties.length)
+      .map((item) => ({ date: item.date, title: item.localName || item.name }))
+      .filter((item) => item.date && item.title);
+    if (!holidays.length) return;
+    state.company.autoHolidayCache = state.company.autoHolidayCache || {};
+    state.company.autoHolidayCache[year] = holidays;
+    saveState(`Public holidays ${year} synced.`);
+    render();
+  } catch {}
+}
+
+function holidayMatchesPeriod(holiday, eventFrom, eventTo, eventFullDay, eventStartTime = "", eventEndTime = "") {
+  const from = holiday.from || holiday.date;
+  const to = holiday.to || holiday.date || from;
+  const sameFullDayMode = (holiday.fullDay !== false) === eventFullDay;
+  const sameTime = eventFullDay || ((holiday.startTime || "") === eventStartTime && (holiday.endTime || "") === eventEndTime);
+  const fullyInsideRange = from >= eventFrom && to <= eventTo;
+  return Boolean(from && to && fullyInsideRange && sameFullDayMode && sameTime);
+}
+
+function holidayExcludedOnDate(holiday, dateValue) {
+  return (state.company.publicHolidayExclusions || []).some((exclusion) => {
+    const from = exclusion.from || exclusion.date;
+    const to = exclusion.to || exclusion.date || from;
+    if (!from || !to || !dateInRange(dateValue, from, to)) return false;
+    const holidayFrom = holiday.from || holiday.date;
+    const holidayTo = holiday.to || holiday.date || holidayFrom;
+    if (!holidayFrom || !holidayTo || !dateInRange(dateValue, holidayFrom, holidayTo)) return false;
+    const sameFullDayMode = (holiday.fullDay !== false) === (exclusion.fullDay !== false);
+    const sameTime = holiday.fullDay !== false || ((holiday.startTime || "") === (exclusion.startTime || "") && (holiday.endTime || "") === (exclusion.endTime || ""));
+    return sameFullDayMode && sameTime;
+  });
+}
+
 function allPublicHolidaysForDate(dateValue) {
   const year = new Date(`${dateValue}T00:00:00`).getFullYear();
   return [
     ...(state.company.publicHolidays || []),
     ...autoPublicHolidaysForYear(year)
-  ];
+  ].filter((holiday) => !holidayExcludedOnDate(holiday, dateValue));
 }
 
 function holidayForDate(dateValue, fullDayOnly = false) {
@@ -1540,6 +1612,7 @@ function calendarPanel(employeeId, admin = false) {
   normalizeCalendarPeriod(employeeId);
   const years = calendarYearOptions(employeeId);
   const date = calendarPeriodDate();
+  ensureAutoPublicHolidaysForYear(date.getFullYear());
   const months = calendarMonthOptions(employeeId, selectedCalendarYear);
   const exportButtons = `<div class="calendar-export-actions"><span>Export</span><button class="btn" data-export-calendar="${employeeId}">Report</button><button class="btn" data-export-timesheet="${employeeId}">Timesheet</button>${admin ? `<button class="btn" data-export-calendar="all">All Reports</button><button class="btn" data-export-timesheet="all">All Timesheets</button>` : ""}</div>`;
   return `<div class="calendar-toolbar"><div class="calendar-filters">${admin ? `<label class="search-field"><span>Employee</span><select class="select-control" id="calendarEmployee">${state.employees.map((emp) => `<option value="${emp.id}" ${emp.id === employeeId ? "selected" : ""}>${escapeHtml(emp.name)}</option>`).join("")}</select></label>` : ""}<label class="search-field"><span>Year</span><select class="select-control" id="calendarYear">${years.map((year) => `<option value="${year}" ${year === selectedCalendarYear ? "selected" : ""}>${year}</option>`).join("")}</select></label><label class="search-field"><span>Month</span><select class="select-control" id="calendarMonth">${months.map((month) => `<option value="${month.index}" ${month.index === selectedCalendarMonth ? "selected" : ""}>${month.name}</option>`).join("")}</select></label></div>${exportButtons}</div>${calendarForEmployee(employeeId, date)}`;
@@ -1682,7 +1755,7 @@ function renderSettings() {
       <label class="field"><span class="label-row">Allowed Radius (m) ${helpTip("Employees must be inside this GPS radius to check in by QR or manual code. Use a larger radius only if the office GPS is unstable.")}</span><input id="officeRadius" type="number" min="20" max="5000" step="10" value="${state.company.officeRadius}" required></label>
       <label class="field check-line wide"><input id="autoCheckout" type="checkbox" ${state.company.autoCheckout ? "checked" : ""}><span>Auto check-out when employee leaves GPS radius ${helpTip("Works while the employee website is open and location permission remains allowed. Browsers cannot reliably track location after the tab/app is fully closed.")}</span></label>
       <label class="field check-line wide"><input id="autoPublicHolidays" type="checkbox" ${state.company.autoPublicHolidays !== false ? "checked" : ""}><span>Auto Malaysia national public holidays ${helpTip("Adds Malaysia national public holidays to every employee calendar automatically. Admin can still add company-specific or state-specific holidays through Announcements.")}</span></label>
-      <div class="field wide dataset-card"><span>Holiday Source</span><strong>${escapeHtml(state.company.holidayCountry || "Malaysia")} - ${escapeHtml(state.company.holidayRegion || "National")}</strong><small>Automatic list currently covers Malaysia national public holidays for 2026. State holidays and company replacement days can be added by admin announcements.</small></div>
+      <div class="field wide dataset-card"><span>Holiday Source</span><strong>${escapeHtml(state.company.holidayCountry || "Malaysia")} - ${escapeHtml(state.company.holidayRegion || "National")}</strong><small>Public holidays sync automatically by selected year when provider data is available. Admin announcements are only needed for company adjustments, state replacement days, or changing a holiday into a working day.</small></div>
       <div class="field wide settings-block"><span>Leave Entitlement Per Year</span><div class="settings-grid">${leavePolicies.map((policy, index) => `<label class="field"><span>${escapeHtml(policy.type)} Days</span><input class="leave-days" data-leave-index="${index}" type="number" min="0" step="0.5" value="${policy.days}"></label><label class="field"><span>${escapeHtml(policy.type)} Expiry</span><input class="leave-expiry" data-leave-index="${index}" placeholder="MM-DD" value="${escapeHtml(policy.expires || "12-31")}"></label>`).join("")}</div></div>
       <div class="field wide settings-block"><span>Employee Schemes</span><div class="settings-grid">${schemeTypes.map((type) => {
         const scheme = state.company.schemes?.[type] || {};
@@ -2129,15 +2202,19 @@ function submitAnnouncement(event) {
   if (!item.title || !item.content) return failAnnouncement("Fill in announcement title and content.");
   if (holidayAction === "remove") {
     const filteredHolidays = state.company.publicHolidays.filter((holiday) => {
-      const from = holiday.from || holiday.date;
-      const to = holiday.to || holiday.date || from;
-      const sameFullDayMode = (holiday.fullDay !== false) === eventFullDay;
-      const sameTime = eventFullDay || ((holiday.startTime || "") === item.eventStartTime && (holiday.endTime || "") === item.eventEndTime);
-      const fullyInsideRange = from >= eventFrom && to <= eventTo;
-      return !(fullyInsideRange && sameFullDayMode && sameTime);
+      return !holidayMatchesPeriod(holiday, eventFrom, eventTo, eventFullDay, item.eventStartTime, item.eventEndTime);
     });
-    if (filteredHolidays.length === state.company.publicHolidays.length) return failAnnouncement("No matching calendar holiday/event found for that range and time.");
+    const removedManualHoliday = filteredHolidays.length !== state.company.publicHolidays.length;
+    const matchingAutoHoliday = dateRange(eventFrom, eventTo).some((dateValue) => {
+      const year = new Date(`${dateValue}T00:00:00`).getFullYear();
+      return autoPublicHolidaysForYear(year).some((holiday) => holidayMatchesPeriod(holiday, eventFrom, eventTo, eventFullDay, item.eventStartTime, item.eventEndTime));
+    });
+    if (!removedManualHoliday && !matchingAutoHoliday) return failAnnouncement("No matching calendar holiday/event found for that range and time.");
     state.company.publicHolidays = filteredHolidays;
+    if (matchingAutoHoliday) {
+      state.company.publicHolidayExclusions = state.company.publicHolidayExclusions || [];
+      state.company.publicHolidayExclusions.push({ id: `HEX${Date.now()}`, announcementId: item.id, from: eventFrom, to: eventTo, title: item.title, fullDay: eventFullDay, startTime: item.eventStartTime, endTime: item.eventEndTime });
+    }
   }
   if (holidayAction === "add") {
     const exists = state.company.publicHolidays.some((holiday) => holiday.announcementId === item.id);
