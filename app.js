@@ -1,7 +1,7 @@
 const STORAGE_KEY = "attendpro-state-v2";
 const COMPANY_KEY_STORAGE = "attendpro-company-key";
 const DATASET_PASSWORD_STORAGE = "attendpro-dataset-password";
-const APP_VERSION = "20260607-office-remote-governance";
+const APP_VERSION = "20260607-employment-aware-remote-work";
 const APP_VERSION_STORAGE = "attendpro-app-version";
 const TAB_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const channel = "BroadcastChannel" in window ? new BroadcastChannel("attendpro-sync") : null;
@@ -30,6 +30,7 @@ const seedState = {
     officeLocationUpdatedBy: "",
     officeLocationUpdatedAt: "",
     officeLocationRemark: "",
+    halfDaySplitTime: "13:00",
     autoCheckout: false,
     autoPublicHolidays: true,
     holidayCountry: "Malaysia",
@@ -190,6 +191,7 @@ function normalize(input) {
       officeLocationUpdatedBy: (input.company || {}).officeLocationUpdatedBy || "",
       officeLocationUpdatedAt: (input.company || {}).officeLocationUpdatedAt || "",
       officeLocationRemark: (input.company || {}).officeLocationRemark || "",
+      halfDaySplitTime: (input.company || {}).halfDaySplitTime || seedState.company.halfDaySplitTime,
       lateAfter: (input.company || {}).lateAfter || legacyPolicy.lateAfter || seedState.company.lateAfter,
       codeSecret: (input.company || {}).codeSecret || legacyPolicy.onsiteSecret || seedState.company.codeSecret,
       codeInterval: Number((input.company || {}).codeInterval ?? legacyPolicy.codeIntervalSeconds ?? seedState.company.codeInterval),
@@ -582,7 +584,7 @@ async function verifyOfficeLocation(method) {
   if (distance > office.radius) {
     throw new Error(`Too far from office: ${distance}m away. Allowed radius is ${office.radius}m.`);
   }
-  return `${method} + GPS verified (${distance}m)`;
+  return `${method} + GPS verified (${distance}m, accuracy +/-${Math.round(position.coords.accuracy || 0)}m)`;
 }
 
 async function remoteWorkVerification(request) {
@@ -593,7 +595,7 @@ async function remoteWorkVerification(request) {
   const position = await getCurrentPosition();
   const current = { lat: position.coords.latitude, lng: position.coords.longitude };
   const distance = officeLocationReady() ? distanceMeters(current, officePoint()) : null;
-  return `${status} approved + Remote GPS verified${distance === null ? "" : ` (${distance}m from office)`}`;
+  return `${status} approved + Remote GPS verified${distance === null ? "" : ` (${distance}m from office)`}, accuracy +/-${Math.round(position.coords.accuracy || 0)}m`;
 }
 
 function employee(id) {
@@ -624,7 +626,9 @@ function isOpenAttendanceRecord(record) {
 }
 
 function allowsMultipleSessions(emp = employee(session?.id), dateValue = today()) {
-  return emp?.attendanceMode === "Multiple Sessions" || approvedRemoteWorkForDate(emp?.id, dateValue)?.type === "Business Trip";
+  const approvedRemote = approvedRemoteWorkForDate(emp?.id, dateValue);
+  const halfDayRemote = approvedRemote && requestDurationLabel(approvedRemote).startsWith("Half Day");
+  return emp?.attendanceMode === "Multiple Sessions" || approvedRemote?.type === "Business Trip" || Boolean(halfDayRemote);
 }
 
 function isPrimaryAdmin() {
@@ -884,8 +888,32 @@ function approvedRemoteWorkForDate(employeeId, dateValue) {
   return requestsForDate(employeeId, dateValue).find((request) => request.status === "Approved" && ["WFH", "Business Trip"].includes(request.type));
 }
 
+function remoteRequestActiveAt(request, dateValue = today(), timeValue = nowTime()) {
+  if (!request || request.status !== "Approved" || !["WFH", "Business Trip"].includes(request.type)) return false;
+  if (!dateInRange(dateValue, request.from, request.to)) return false;
+  const duration = requestDurationLabel(request);
+  const split = state.company.halfDaySplitTime || "13:00";
+  if (duration === "Half Day Morning") return timeValue < split;
+  if (duration === "Half Day Afternoon") return timeValue >= split;
+  return true;
+}
+
+function activeRemoteWorkForDate(employeeId, dateValue = today(), timeValue = nowTime()) {
+  return requestsForDate(employeeId, dateValue).find((request) => remoteRequestActiveAt(request, dateValue, timeValue));
+}
+
 function remoteWorkStatus(request) {
   return request?.type === "Business Trip" ? "Business Trip" : "WFH";
+}
+
+function remoteWorkRuleLabel(emp, request) {
+  if (!request) return "";
+  const duration = requestDurationLabel(request);
+  const durationText = duration === "Full Day" ? "Full day" : `${duration} (split at ${state.company.halfDaySplitTime || "13:00"})`;
+  const sessionText = request.type === "Business Trip"
+    ? "Flexible multiple sessions"
+    : emp?.attendanceMode === "Multiple Sessions" ? "Uses employee multiple-session mode" : "Uses employee single-daily mode";
+  return `${durationText} | ${sessionText} | Remote GPS required`;
 }
 
 function requestDurationLabel(request) {
@@ -1544,9 +1572,11 @@ function renderEmployeeDashboard() {
   const latestToday = todayRecords.at(-1);
   const inactive = emp.status === "Inactive";
   const multiSession = allowsMultipleSessions(emp);
-  const remoteRequest = approvedRemoteWorkForDate(emp.id, today());
-  const attendanceModeText = remoteRequest
-    ? `${remoteWorkStatus(remoteRequest)} approved. Remote GPS is required; office radius and rotating code are not required.${remoteRequest.type === "Business Trip" ? " Multiple sessions are allowed for flexible trip hours." : ""}`
+  const approvedRemoteRequest = approvedRemoteWorkForDate(emp.id, today());
+  const remoteRequest = activeRemoteWorkForDate(emp.id, today());
+  const displayedRemoteRequest = remoteRequest || approvedRemoteRequest;
+  const attendanceModeText = approvedRemoteRequest
+    ? `${remoteWorkStatus(displayedRemoteRequest)} approved: ${remoteWorkRuleLabel(emp, displayedRemoteRequest)}.${remoteRequest ? " Remote check-in is available now." : " This remote-work period is not active at the current time; normal office attendance rules apply."}`
     : `Scan the lobby QR or enter the rotating code. Both methods require office GPS range. ${multiSession ? "This account can check in/out multiple sessions per day." : "This account can check in once per day."}`;
   const adminUpdates = adminManualUpdates(session.id).slice(0, 5);
   return `
@@ -1837,6 +1867,7 @@ function renderSettings() {
       <label class="field"><span>Company Name</span><input id="companyName" value="${escapeHtml(state.company.name)}" required></label>
       <label class="field"><span>Office Name</span><input id="officeName" value="${escapeHtml(state.company.officeName)}" required ${locationLocked}></label>
       <label class="field"><span>Late After</span><input id="lateAfter" type="time" value="${state.company.lateAfter}" required></label>
+      <label class="field"><span class="label-row">Half-day Split Time ${helpTip("Defines when Half Day Morning ends and Half Day Afternoon begins for WFH, business trip, and leave arrangements.")}</span><input id="halfDaySplitTime" type="time" value="${state.company.halfDaySplitTime || "13:00"}" required></label>
       <label class="field"><span class="label-row">QR / Code Refresh ${helpTip("How often the QR and manual code rotate. Shorter timing is safer because leaked codes expire faster.")}</span><select id="codeInterval"><option value="30" ${state.company.codeInterval === 30 ? "selected" : ""}>30 seconds</option><option value="60" ${state.company.codeInterval === 60 ? "selected" : ""}>60 seconds</option></select></label>
       <label class="field">
         <span class="label-row">Code Secret ${helpTip("Private seed used to generate rotating QR and manual codes. Change it if a code is leaked.")}</span>
@@ -1848,6 +1879,7 @@ function renderSettings() {
       <label class="field"><span class="label-row">Allowed Radius (m) ${helpTip("Employees must be inside this GPS radius to check in by QR or manual code. Use a larger radius only if the office GPS is unstable.")}</span><input id="officeRadius" type="number" min="20" max="5000" step="10" value="${state.company.officeRadius}" required ${locationLocked}></label>
       ${primaryAdmin ? `<label class="field wide"><span>Office Location Confirmation / Change Reason</span><textarea id="officeLocationRemark" placeholder="Required for the first confirmation and whenever office name, coordinates, or radius changes"></textarea></label>` : ""}
       <label class="field check-line wide"><input id="autoCheckout" type="checkbox" ${state.company.autoCheckout ? "checked" : ""}><span>Auto check-out when employee leaves GPS radius ${helpTip("Works while the employee website is open and location permission remains allowed. Browsers cannot reliably track location after the tab/app is fully closed.")}</span></label>
+      <div class="field wide dataset-card"><span>Remote Attendance Rules</span><strong>Employment rules remain enforced</strong><small>WFH follows each employee's assigned attendance mode. Business Trip allows flexible multiple sessions. Half-day remote arrangements allow one remote/office transition. Remote GPS is mandatory. Inactive employees and expired contracts cannot check in or submit requests.</small></div>
       <label class="field check-line wide"><input id="autoPublicHolidays" type="checkbox" ${state.company.autoPublicHolidays !== false ? "checked" : ""}><span>Auto Malaysia national public holidays ${helpTip("Adds Malaysia national public holidays to every employee calendar automatically. Admin can still add company-specific or state-specific holidays through Announcements.")}</span></label>
       <div class="field wide dataset-card"><span>Holiday Source</span><strong>${escapeHtml(state.company.holidayCountry || "Malaysia")} - ${escapeHtml(state.company.holidayRegion || "National")}</strong><small>Public holidays sync automatically by selected year when provider data is available. Admin announcements are only needed for company adjustments, state replacement days, or changing a holiday into a working day.</small></div>
       <div class="field wide settings-block"><span>Leave Entitlement Per Year</span><div class="settings-grid">${leavePolicies.map((policy, index) => `<label class="field"><span>${escapeHtml(policy.type)} Days</span><input class="leave-days" data-leave-index="${index}" type="number" min="0" step="0.5" value="${policy.days}"></label><label class="field"><span>${escapeHtml(policy.type)} Expiry</span><input class="leave-expiry" data-leave-index="${index}" placeholder="MM-DD" value="${escapeHtml(policy.expires || "12-31")}"></label>`).join("")}</div></div>
@@ -1882,7 +1914,7 @@ function renderAudit() {
 function bindEvents() {
   bindPasswordToggles();
   document.querySelector("#checkIn")?.addEventListener("click", () => {
-    const remoteRequest = approvedRemoteWorkForDate(session?.id, today());
+    const remoteRequest = activeRemoteWorkForDate(session?.id, today());
     if (remoteRequest) checkIn("Approved remote attendance");
     else openManualCheckIn();
   });
@@ -2136,11 +2168,11 @@ async function checkIn(method) {
   if (attendanceBusy) return toast("Attendance action is already processing.");
   if (!isActiveEmployee()) return toast("Inactive account cannot check in.");
   if (currentOpenRecord()) return toast("Already checked in.");
-  if (!allowsMultipleSessions() && todaysRecords().length) return toast("You have already checked in today.");
+  const remoteRequest = activeRemoteWorkForDate(session.id, today());
+  if (!allowsMultipleSessions(employee(session.id), today()) && todaysRecords().length) return toast("You have already checked in today.");
   attendanceBusy = true;
   render();
   let verification;
-  const remoteRequest = approvedRemoteWorkForDate(session.id, today());
   try {
     toast(remoteRequest ? "Checking approved remote work..." : "Checking office location...");
     verification = remoteRequest ? await remoteWorkVerification(remoteRequest) : await verifyOfficeLocation(method);
@@ -2149,7 +2181,7 @@ async function checkIn(method) {
     render();
     return toast(error.message || "Location check failed.");
   }
-  if (currentOpenRecord() || (!allowsMultipleSessions() && todaysRecords().length)) {
+  if (currentOpenRecord() || (!allowsMultipleSessions(employee(session.id), today()) && todaysRecords().length)) {
     attendanceBusy = false;
     render();
     return toast("You have already checked in today.");
@@ -2158,7 +2190,8 @@ async function checkIn(method) {
   const first = todaysRecords().length === 0;
   const status = remoteRequest ? remoteWorkStatus(remoteRequest) : !isWorkingDay(today()) ? "Off-day Work" : first && minutes(time) > minutes(state.company.lateAfter) ? "Late" : "Checked In";
   const sessionNo = todaysRecords().filter((record) => record.checkIn).length + 1;
-  state.attendance.push({ id: `ATT${Date.now()}`, employeeId: session.id, date: today(), checkIn: time, checkOut: "", hours: "", status, verification, sessionNo, sessionLabel: `Session ${sessionNo}` });
+  const remoteRemark = remoteRequest ? `${remoteWorkRuleLabel(employee(session.id), remoteRequest)}. Approved request ${remoteRequest.id}.` : "";
+  state.attendance.push({ id: `ATT${Date.now()}`, employeeId: session.id, date: today(), checkIn: time, checkOut: "", hours: "", status, verification, sessionNo, sessionLabel: `Session ${sessionNo}`, remark: remoteRemark });
   addAudit("Check in", `${session.name} checked in using ${verification}.`);
   saveState("Attendance updated.");
   attendanceBusy = false;
@@ -2217,6 +2250,7 @@ async function submitLeave(event) {
   if (from < today()) return failRequest("Start date cannot be in the past.");
   if (to < from) return failRequest("End date must be after start date.");
   if (duration !== "Full Day" && from !== to) return failRequest("Half day requests must use the same From and To date.");
+  if (dateRange(from, to).some((dateValue) => !employeeActiveOnDate(employee(session.id), dateValue))) return failRequest("Requests must stay within your active employment or contract period.");
   if (type === "Emergency Leave" && !evidenceFile && !evidenceNote) return failRequest("MC or evidence is required for Emergency Leave.");
   let evidence = null;
   try {
@@ -2239,6 +2273,9 @@ function updateLeave(id, status) {
   const leave = state.leaves.find((item) => item.id === id);
   if (!leave) return;
   if (leave.status !== "Pending") return toast("This request has already been reviewed.");
+  if (status === "Approved" && dateRange(leave.from, leave.to).some((dateValue) => !employeeActiveOnDate(employee(leave.employeeId), dateValue))) {
+    return toast("Cannot approve: request is outside the employee's active employment or contract period.");
+  }
   leave.status = status;
   leave.reviewedBy = session.name;
   leave.reviewedAt = new Date().toLocaleString("en-GB", { hour12: false });
@@ -2466,6 +2503,7 @@ function saveSettings(event) {
   state.company.name = document.querySelector("#companyName").value.trim();
   state.company.officeName = nextOffice.name;
   state.company.lateAfter = document.querySelector("#lateAfter").value;
+  state.company.halfDaySplitTime = document.querySelector("#halfDaySplitTime").value;
   state.company.codeInterval = Number(document.querySelector("#codeInterval").value);
   state.company.codeSecret = document.querySelector("#codeSecret").value.trim().toUpperCase();
   state.company.officeLatitude = nextOffice.latitude;
