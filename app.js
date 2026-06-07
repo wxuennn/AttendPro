@@ -1,7 +1,7 @@
 const STORAGE_KEY = "attendpro-state-v2";
 const COMPANY_KEY_STORAGE = "attendpro-company-key";
 const DATASET_PASSWORD_STORAGE = "attendpro-dataset-password";
-const APP_VERSION = "20260607-employment-aware-remote-work";
+const APP_VERSION = "20260607-employee-attendance-policies";
 const APP_VERSION_STORAGE = "attendpro-app-version";
 const TAB_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const channel = "BroadcastChannel" in window ? new BroadcastChannel("attendpro-sync") : null;
@@ -238,6 +238,16 @@ function normalize(input) {
       employmentDate: emp.employmentDate || "",
       employeeType: emp.employeeType || "Permanent",
       attendanceMode: emp.attendanceMode || (["Part-time", "Contract"].includes(emp.employeeType) ? "Multiple Sessions" : "Single Daily"),
+      workStart: emp.workStart || seedState.company.lateAfter,
+      workEnd: emp.workEnd || "17:00",
+      lateGraceMinutes: Number(emp.lateGraceMinutes ?? 0),
+      requireOfficeGps: emp.requireOfficeGps !== false,
+      overtimeEligible: emp.overtimeEligible !== false,
+      bonusEligible: emp.bonusEligible !== false,
+      targetHoursOverride: Number(emp.targetHoursOverride || 0),
+      otAfterHoursOverride: Number(emp.otAfterHoursOverride || 0),
+      bonusAfterHoursOverride: Number(emp.bonusAfterHoursOverride || 0),
+      attendancePolicyRemark: emp.attendancePolicyRemark || "",
       scheme: emp.scheme || emp.employeeType || "Permanent",
       address: emp.address || "",
       idNumber: emp.idNumber || "",
@@ -258,6 +268,8 @@ function normalize(input) {
     leaves: (input.leaves || []).map((request) => ({
       ...request,
       duration: request.duration || "Full Day",
+      arrangementStartTime: request.arrangementStartTime || "",
+      arrangementEndTime: request.arrangementEndTime || "",
       employeeSeen: request.employeeSeen ?? (request.status === "Pending"),
       reviewedBy: request.reviewedBy || "",
       reviewedAt: request.reviewedAt || "",
@@ -584,7 +596,10 @@ async function verifyOfficeLocation(method) {
   if (distance > office.radius) {
     throw new Error(`Too far from office: ${distance}m away. Allowed radius is ${office.radius}m.`);
   }
-  return `${method} + GPS verified (${distance}m, accuracy +/-${Math.round(position.coords.accuracy || 0)}m)`;
+  return {
+    text: `${method} + GPS verified (${distance}m, accuracy +/-${Math.round(position.coords.accuracy || 0)}m)`,
+    location: { latitude: current.lat, longitude: current.lng, accuracy: Math.round(position.coords.accuracy || 0), distanceFromOffice: distance }
+  };
 }
 
 async function remoteWorkVerification(request) {
@@ -595,7 +610,31 @@ async function remoteWorkVerification(request) {
   const position = await getCurrentPosition();
   const current = { lat: position.coords.latitude, lng: position.coords.longitude };
   const distance = officeLocationReady() ? distanceMeters(current, officePoint()) : null;
-  return `${status} approved + Remote GPS verified${distance === null ? "" : ` (${distance}m from office)`}, accuracy +/-${Math.round(position.coords.accuracy || 0)}m`;
+  return {
+    text: `${status} approved + Remote GPS verified${distance === null ? "" : ` (${distance}m from office)`}, accuracy +/-${Math.round(position.coords.accuracy || 0)}m`,
+    location: { latitude: current.lat, longitude: current.lng, accuracy: Math.round(position.coords.accuracy || 0), distanceFromOffice: distance }
+  };
+}
+
+async function recordedLocationVerification(method) {
+  if (!window.isSecureContext && !["localhost", "127.0.0.1"].includes(location.hostname)) throw new Error("Attendance GPS needs HTTPS.");
+  const position = await getCurrentPosition();
+  const current = { lat: position.coords.latitude, lng: position.coords.longitude };
+  const distance = officeLocationReady() ? distanceMeters(current, officePoint()) : null;
+  return {
+    text: `${method} + GPS recorded${distance === null ? "" : ` (${distance}m from office)`}, accuracy +/-${Math.round(position.coords.accuracy || 0)}m`,
+    location: { latitude: current.lat, longitude: current.lng, accuracy: Math.round(position.coords.accuracy || 0), distanceFromOffice: distance }
+  };
+}
+
+function verificationText(result) {
+  return typeof result === "string" ? result : result?.text || "";
+}
+
+function locationLabel(location) {
+  if (!location || !Number.isFinite(Number(location.latitude)) || !Number.isFinite(Number(location.longitude))) return "-";
+  const distance = location.distanceFromOffice === null || location.distanceFromOffice === undefined ? "" : ` | ${location.distanceFromOffice}m from office`;
+  return `${Number(location.latitude).toFixed(6)}, ${Number(location.longitude).toFixed(6)} | +/-${Number(location.accuracy || 0)}m${distance}`;
 }
 
 function employee(id) {
@@ -891,6 +930,9 @@ function approvedRemoteWorkForDate(employeeId, dateValue) {
 function remoteRequestActiveAt(request, dateValue = today(), timeValue = nowTime()) {
   if (!request || request.status !== "Approved" || !["WFH", "Business Trip"].includes(request.type)) return false;
   if (!dateInRange(dateValue, request.from, request.to)) return false;
+  if (request.arrangementStartTime && request.arrangementEndTime) {
+    return timeValue >= request.arrangementStartTime && timeValue <= request.arrangementEndTime;
+  }
   const duration = requestDurationLabel(request);
   const split = state.company.halfDaySplitTime || "13:00";
   if (duration === "Half Day Morning") return timeValue < split;
@@ -909,11 +951,47 @@ function remoteWorkStatus(request) {
 function remoteWorkRuleLabel(emp, request) {
   if (!request) return "";
   const duration = requestDurationLabel(request);
-  const durationText = duration === "Full Day" ? "Full day" : `${duration} (split at ${state.company.halfDaySplitTime || "13:00"})`;
+  const arrangedTime = request.arrangementStartTime && request.arrangementEndTime ? `${request.arrangementStartTime}-${request.arrangementEndTime}` : "";
+  const durationText = duration === "Full Day" ? `Full day${arrangedTime ? `, ${arrangedTime}` : ""}` : `${duration}${arrangedTime ? `, ${arrangedTime}` : ` (split at ${state.company.halfDaySplitTime || "13:00"})`}`;
   const sessionText = request.type === "Business Trip"
     ? "Flexible multiple sessions"
     : emp?.attendanceMode === "Multiple Sessions" ? "Uses employee multiple-session mode" : "Uses employee single-daily mode";
   return `${durationText} | ${sessionText} | Remote GPS required`;
+}
+
+function effectiveWorkSchedule(employeeId, dateValue = today()) {
+  const emp = employee(employeeId);
+  const schedule = {
+    start: emp?.workStart || state.company.lateAfter || "09:00",
+    end: emp?.workEnd || "17:00",
+    source: "Employee policy",
+    remark: ""
+  };
+  const approved = requestsForDate(employeeId, dateValue).filter((request) => request.status === "Approved");
+  if (!approved.length) return schedule;
+  const remote = approved.find((request) => ["WFH", "Business Trip"].includes(request.type) && request.arrangementStartTime && request.arrangementEndTime);
+  if (remote) {
+    return { start: remote.arrangementStartTime, end: remote.arrangementEndTime, source: `${remote.type} request`, remark: `Adjusted schedule from approved ${remote.type} request ${remote.id}.` };
+  }
+  const morning = approved.find((request) => requestDurationLabel(request) === "Half Day Morning");
+  const afternoon = approved.find((request) => requestDurationLabel(request) === "Half Day Afternoon");
+  const remarks = [];
+  if (morning) {
+    schedule.start = morning.arrangementEndTime || state.company.halfDaySplitTime || "13:00";
+    remarks.push(`Work start adjusted after approved Half Day Morning ${morning.type} request ${morning.id}.`);
+  }
+  if (afternoon) {
+    schedule.end = afternoon.arrangementStartTime || state.company.halfDaySplitTime || "13:00";
+    remarks.push(`Work end adjusted before approved Half Day Afternoon ${afternoon.type} request ${afternoon.id}.`);
+  }
+  if (remarks.length) return { ...schedule, source: "Approved half-day request", remark: remarks.join(" ") };
+  return schedule;
+}
+
+function lateThresholdMinutes(employeeId, dateValue = today()) {
+  const emp = employee(employeeId);
+  const schedule = effectiveWorkSchedule(employeeId, dateValue);
+  return minutes(schedule.start) + Number(emp?.lateGraceMinutes || 0);
 }
 
 function requestDurationLabel(request) {
@@ -922,7 +1000,8 @@ function requestDurationLabel(request) {
 
 function requestCalendarLabel(request) {
   const duration = requestDurationLabel(request);
-  return duration === "Full Day" ? request.type : `${request.type} (${duration})`;
+  const time = request.arrangementStartTime && request.arrangementEndTime ? ` ${request.arrangementStartTime}-${request.arrangementEndTime}` : "";
+  return duration === "Full Day" ? `${request.type}${time}` : `${request.type} (${duration}${time})`;
 }
 
 function leaveUnits(request) {
@@ -952,7 +1031,13 @@ function monthlyWorkedMinutes(employeeId, date = new Date()) {
 }
 
 function schemeForEmployee(emp) {
-  return state.company.schemes?.[emp.scheme || emp.employeeType] || state.company.schemes?.[emp.employeeType] || { monthlyTargetHours: 0, otAfterHours: 0, bonusAfterHours: 0 };
+  const scheme = state.company.schemes?.[emp.scheme || emp.employeeType] || state.company.schemes?.[emp.employeeType] || { monthlyTargetHours: 0, otAfterHours: 0, bonusAfterHours: 0 };
+  return {
+    ...scheme,
+    monthlyTargetHours: Number(emp.targetHoursOverride || scheme.monthlyTargetHours || 0),
+    otAfterHours: emp.overtimeEligible === false ? 0 : Number(emp.otAfterHoursOverride || scheme.otAfterHours || 0),
+    bonusAfterHours: emp.bonusEligible === false ? 0 : Number(emp.bonusAfterHoursOverride || scheme.bonusAfterHours || 0)
+  };
 }
 
 function schemeStatus(emp) {
@@ -1370,6 +1455,7 @@ function handleGeofencePosition(position) {
   record.status = record.status === "Late" || record.status === "Off-day Work" ? record.status : "Present";
   record.remark = [record.remark, `Auto check-out: left office range (${distance}m from office).`].filter(Boolean).join(" | ");
   record.checkOutVerification = `Auto geofence (${distance}m)`;
+  record.checkOutLocation = { latitude: current.lat, longitude: current.lng, accuracy: Math.round(position.coords.accuracy || 0), distanceFromOffice: distance };
   record.updatedBy = "System";
   record.updatedAt = new Date().toLocaleString("en-GB", { hour12: false });
   addAudit("Auto check-out", `${session.name} was checked out automatically after leaving office range (${distance}m).`);
@@ -1575,9 +1661,10 @@ function renderEmployeeDashboard() {
   const approvedRemoteRequest = approvedRemoteWorkForDate(emp.id, today());
   const remoteRequest = activeRemoteWorkForDate(emp.id, today());
   const displayedRemoteRequest = remoteRequest || approvedRemoteRequest;
+  const todaySchedule = effectiveWorkSchedule(emp.id, today());
   const attendanceModeText = approvedRemoteRequest
     ? `${remoteWorkStatus(displayedRemoteRequest)} approved: ${remoteWorkRuleLabel(emp, displayedRemoteRequest)}.${remoteRequest ? " Remote check-in is available now." : " This remote-work period is not active at the current time; normal office attendance rules apply."}`
-    : `Scan the lobby QR or enter the rotating code. Both methods require office GPS range. ${multiSession ? "This account can check in/out multiple sessions per day." : "This account can check in once per day."}`;
+    : `Scan the lobby QR or enter the rotating code. Exact GPS is always recorded${emp.requireOfficeGps !== false ? " and must be inside the office radius" : ", without an office-radius restriction"}. ${multiSession ? "This account can check in/out multiple sessions per day." : "This account can check in once per day."}`;
   const adminUpdates = adminManualUpdates(session.id).slice(0, 5);
   return `
     <div class="metrics">
@@ -1585,7 +1672,7 @@ function renderEmployeeDashboard() {
       <div class="metric"><span>Today Sessions</span><strong>${todaysRecords().length}</strong></div>
       <div class="metric"><span>Today Worked</span><strong>${totalHoursForDate(session.id, today())}</strong></div>
     </div>
-    <div class="metrics"><div class="metric"><span>Employee Type</span><strong>${escapeHtml(emp.employeeType)}</strong></div><div class="metric"><span>Distance From Office</span><strong id="distanceText">${escapeHtml(currentDistanceText)}</strong><button class="btn compact-btn" id="updateDistance" type="button">Update</button></div><div class="metric code-metric"><div class="metric-row"><span>Current Code</span><small class="metric-timer" id="countdown">${secondsLeft()}s</small></div><strong id="liveCode">${currentCode()}</strong></div></div>
+    <div class="metrics"><div class="metric"><span>Employee Type</span><strong>${escapeHtml(emp.employeeType)}</strong></div><div class="metric"><span>Today's Schedule</span><strong>${escapeHtml(`${todaySchedule.start}-${todaySchedule.end}`)}</strong><small>${escapeHtml(todaySchedule.source)}</small></div><div class="metric"><span>Distance From Office</span><strong id="distanceText">${escapeHtml(currentDistanceText)}</strong><button class="btn compact-btn" id="updateDistance" type="button">Update</button></div><div class="metric code-metric"><div class="metric-row"><span>Current Code</span><small class="metric-timer" id="countdown">${secondsLeft()}s</small></div><strong id="liveCode">${currentCode()}</strong></div></div>
     ${inactive ? `<section class="panel notice danger">This account is inactive. You can view and export records only.</section>` : ""}
     <section class="panel">
       <div class="panel-head"><h2>Today Attendance</h2></div>
@@ -1657,7 +1744,7 @@ function renderRecords(admin) {
 
 function attendanceTable(records, admin) {
   if (!records.length) return `<p class="empty">No records yet.</p>`;
-  return `<div class="table-wrap record-scroll"><table class="responsive-table"><thead><tr>${admin ? "<th>Employee</th>" : ""}<th>Date</th><th>Session</th><th>In</th><th>Out</th><th>Hours</th><th>Status</th><th>Check-in Verify</th><th>Check-out Verify</th><th>Remark</th>${admin ? "<th>Updated By</th><th>Action</th>" : ""}</tr></thead><tbody>${records.map((r) => `<tr>${admin ? `<td data-label="Employee">${escapeHtml(employee(r.employeeId)?.name || r.employeeId)}</td>` : ""}<td data-label="Date">${formatDate(r.date)}</td><td data-label="Session">${escapeHtml(sessionLabel(r) || "-")}</td><td data-label="In">${r.checkIn || "-"}</td><td data-label="Out">${r.checkOut || "-"}</td><td data-label="Hours">${r.hours || "-"}</td><td data-label="Status"><span class="${badgeClass(r.status)}">${r.status}</span></td><td data-label="Check-in Verify">${escapeHtml(displayVerification(r.verification))}</td><td data-label="Check-out Verify">${escapeHtml(r.checkOut ? displayVerification(r.checkOutVerification || "GPS verified") : "-")}</td><td data-label="Remark">${escapeHtml(r.remark || "-")}</td>${admin ? `<td data-label="Updated By">${escapeHtml(r.updatedBy || "-")}</td><td class="actions" data-label="Action"><button class="btn" data-edit-attendance="${r.id}">Edit</button><button class="btn danger" data-delete-attendance="${r.id}">Delete</button></td>` : ""}</tr>`).join("")}</tbody></table></div>`;
+  return `<div class="table-wrap record-scroll"><table class="responsive-table"><thead><tr>${admin ? "<th>Employee</th>" : ""}<th>Date</th><th>Session</th><th>In</th><th>Out</th><th>Hours</th><th>Status</th><th>Check-in Verify</th><th>Check-in Location</th><th>Check-out Verify</th><th>Check-out Location</th><th>Remark</th>${admin ? "<th>Updated By</th><th>Action</th>" : ""}</tr></thead><tbody>${records.map((r) => `<tr>${admin ? `<td data-label="Employee">${escapeHtml(employee(r.employeeId)?.name || r.employeeId)}</td>` : ""}<td data-label="Date">${formatDate(r.date)}</td><td data-label="Session">${escapeHtml(sessionLabel(r) || "-")}</td><td data-label="In">${r.checkIn || "-"}</td><td data-label="Out">${r.checkOut || "-"}</td><td data-label="Hours">${r.hours || "-"}</td><td data-label="Status"><span class="${badgeClass(r.status)}">${r.status}</span></td><td data-label="Check-in Verify">${escapeHtml(displayVerification(r.verification))}</td><td data-label="Check-in Location">${escapeHtml(locationLabel(r.checkInLocation))}</td><td data-label="Check-out Verify">${escapeHtml(r.checkOut ? displayVerification(r.checkOutVerification || "GPS verified") : "-")}</td><td data-label="Check-out Location">${escapeHtml(locationLabel(r.checkOutLocation))}</td><td data-label="Remark">${escapeHtml(r.remark || "-")}</td>${admin ? `<td data-label="Updated By">${escapeHtml(r.updatedBy || "-")}</td><td class="actions" data-label="Action"><button class="btn" data-edit-attendance="${r.id}">Edit</button><button class="btn danger" data-delete-attendance="${r.id}">Delete</button></td>` : ""}</tr>`).join("")}</tbody></table></div>`;
 }
 
 function calendarForEmployee(employeeId, value = new Date()) {
@@ -1759,6 +1846,8 @@ function renderLeaveForm() {
         <div class="panel-head wide"><h2>Submit Work Request</h2></div>
         <label class="field"><span>Type</span><select id="leaveType"><option>Annual Leave</option><option>Medical Leave</option><option>WFH</option><option>Business Trip</option><option>Emergency Leave</option><option>Unpaid Leave</option></select></label>
         <label class="field"><span class="label-row">Duration ${helpTip("Choose Full Day for one or more full working days. Half Day Morning/Afternoon must use the same From and To date.")}</span><select id="leaveDuration"><option>Full Day</option><option>Half Day Morning</option><option>Half Day Afternoon</option></select></label>
+        <label class="field"><span class="label-row">Arrangement Start ${helpTip("Required for WFH, Business Trip, and half-day requests. For leave, enter when the leave starts. For remote work, enter the approved working start time.")}</span><input id="leaveArrangementStart" type="time"></label>
+        <label class="field"><span>Arrangement End</span><input id="leaveArrangementEnd" type="time"></label>
         <label class="field"><span>From</span><input id="leaveFrom" type="date" min="${today()}" required></label>
         <label class="field"><span>To</span><input id="leaveTo" type="date" min="${today()}" required></label>
         <label class="field wide"><span>Reason</span><textarea id="leaveReason" required></textarea></label>
@@ -1823,7 +1912,7 @@ function renderAbout() {
 
 function leaveTable(leaves, admin) {
   if (!leaves.length) return `<p class="empty">No requests.</p>`;
-  return `<div class="table-wrap record-scroll"><table class="responsive-table work-request-table"><thead><tr>${admin ? "<th>Employee</th>" : ""}<th>Status</th><th>Type</th><th>Duration</th><th>From</th><th>To</th><th>Evidence</th><th>Reason</th>${admin ? "<th>Action</th>" : ""}</tr></thead><tbody>${leaves.map((leave) => `<tr>${admin ? `<td data-label="Employee">${escapeHtml(employee(leave.employeeId)?.name || leave.employeeId)}</td>` : ""}<td data-label="Status" class="status-cell"><span class="${badgeClass(leave.status)}">${leave.status}</span></td><td data-label="Type">${leave.type}</td><td data-label="Duration">${requestDurationLabel(leave)}</td><td data-label="From">${formatDate(leave.from)}</td><td data-label="To">${formatDate(leave.to)}</td><td data-label="Evidence" class="evidence-cell">${evidenceLink(leave)}</td><td data-label="Reason">${escapeHtml(leave.reason)}</td>${admin ? `<td class="actions" data-label="Action"><button class="btn primary" data-approve="${leave.id}" ${leave.status !== "Pending" ? "disabled" : ""}>Approve</button><button class="btn danger" data-reject="${leave.id}" ${leave.status !== "Pending" ? "disabled" : ""}>Reject</button></td>` : ""}</tr>`).join("")}</tbody></table></div>`;
+  return `<div class="table-wrap record-scroll"><table class="responsive-table work-request-table"><thead><tr>${admin ? "<th>Employee</th>" : ""}<th>Status</th><th>Type</th><th>Duration</th><th>Time</th><th>From</th><th>To</th><th>Evidence</th><th>Reason</th>${admin ? "<th>Action</th>" : ""}</tr></thead><tbody>${leaves.map((leave) => `<tr>${admin ? `<td data-label="Employee">${escapeHtml(employee(leave.employeeId)?.name || leave.employeeId)}</td>` : ""}<td data-label="Status" class="status-cell"><span class="${badgeClass(leave.status)}">${leave.status}</span></td><td data-label="Type">${leave.type}</td><td data-label="Duration">${requestDurationLabel(leave)}</td><td data-label="Time">${leave.arrangementStartTime && leave.arrangementEndTime ? `${leave.arrangementStartTime}-${leave.arrangementEndTime}` : "-"}</td><td data-label="From">${formatDate(leave.from)}</td><td data-label="To">${formatDate(leave.to)}</td><td data-label="Evidence" class="evidence-cell">${evidenceLink(leave)}</td><td data-label="Reason">${escapeHtml(leave.reason)}</td>${admin ? `<td class="actions" data-label="Action"><button class="btn primary" data-approve="${leave.id}" ${leave.status !== "Pending" ? "disabled" : ""}>Approve</button><button class="btn danger" data-reject="${leave.id}" ${leave.status !== "Pending" ? "disabled" : ""}>Reject</button></td>` : ""}</tr>`).join("")}</tbody></table></div>`;
 }
 
 function renderEmployees() {
@@ -2173,9 +2262,10 @@ async function checkIn(method) {
   attendanceBusy = true;
   render();
   let verification;
+  const emp = employee(session.id);
   try {
-    toast(remoteRequest ? "Checking approved remote work..." : "Checking office location...");
-    verification = remoteRequest ? await remoteWorkVerification(remoteRequest) : await verifyOfficeLocation(method);
+    toast(remoteRequest ? "Checking approved remote work..." : emp?.requireOfficeGps === false ? "Recording attendance location..." : "Checking office location...");
+    verification = remoteRequest ? await remoteWorkVerification(remoteRequest) : emp?.requireOfficeGps === false ? await recordedLocationVerification(method) : await verifyOfficeLocation(method);
   } catch (error) {
     attendanceBusy = false;
     render();
@@ -2188,11 +2278,13 @@ async function checkIn(method) {
   }
   const time = nowTime();
   const first = todaysRecords().length === 0;
-  const status = remoteRequest ? remoteWorkStatus(remoteRequest) : !isWorkingDay(today()) ? "Off-day Work" : first && minutes(time) > minutes(state.company.lateAfter) ? "Late" : "Checked In";
+  const schedule = effectiveWorkSchedule(session.id, today());
+  const late = first && minutes(time) > lateThresholdMinutes(session.id, today());
+  const status = remoteRequest ? (late ? "Late" : remoteWorkStatus(remoteRequest)) : !isWorkingDay(today()) ? "Off-day Work" : late ? "Late" : "Checked In";
   const sessionNo = todaysRecords().filter((record) => record.checkIn).length + 1;
-  const remoteRemark = remoteRequest ? `${remoteWorkRuleLabel(employee(session.id), remoteRequest)}. Approved request ${remoteRequest.id}.` : "";
-  state.attendance.push({ id: `ATT${Date.now()}`, employeeId: session.id, date: today(), checkIn: time, checkOut: "", hours: "", status, verification, sessionNo, sessionLabel: `Session ${sessionNo}`, remark: remoteRemark });
-  addAudit("Check in", `${session.name} checked in using ${verification}.`);
+  const scheduleRemark = schedule.remark || (remoteRequest ? `${remoteWorkRuleLabel(emp, remoteRequest)}. Approved request ${remoteRequest.id}.` : "");
+  state.attendance.push({ id: `ATT${Date.now()}`, employeeId: session.id, date: today(), checkIn: time, checkOut: "", hours: "", status, remoteType: remoteRequest ? remoteWorkStatus(remoteRequest) : "", verification: verificationText(verification), checkInLocation: verification.location, sessionNo, sessionLabel: `Session ${sessionNo}`, remark: scheduleRemark });
+  addAudit("Check in", `${session.name} checked in using ${verificationText(verification)}. Location: ${locationLabel(verification.location)}.${scheduleRemark ? ` ${scheduleRemark}` : ""}`);
   saveState("Attendance updated.");
   attendanceBusy = false;
   closeModal();
@@ -2209,9 +2301,10 @@ async function checkOut() {
   render();
   let verification;
   try {
-    const remoteStatus = ["WFH", "Business Trip"].includes(record.status);
-    toast(remoteStatus ? "Checking approved remote checkout..." : "Checking office location...");
-    verification = remoteStatus ? await remoteWorkVerification({ type: record.status }) : await verifyOfficeLocation("Check-out GPS");
+    const remoteStatus = record.remoteType || (["WFH", "Business Trip"].includes(record.status) ? record.status : "");
+    const emp = employee(session.id);
+    toast(remoteStatus ? "Checking approved remote checkout..." : emp?.requireOfficeGps === false ? "Recording checkout location..." : "Checking office location...");
+    verification = remoteStatus ? await remoteWorkVerification({ type: remoteStatus }) : emp?.requireOfficeGps === false ? await recordedLocationVerification("Check-out GPS") : await verifyOfficeLocation("Check-out GPS");
   } catch (error) {
     attendanceBusy = false;
     render();
@@ -2220,8 +2313,9 @@ async function checkOut() {
   record.checkOut = nowTime();
   record.hours = duration(record.checkIn, record.checkOut);
   record.status = ["Late", "Off-day Work", "WFH", "Business Trip"].includes(record.status) ? record.status : "Present";
-  record.checkOutVerification = verification;
-  addAudit("Check out", `${session.name} checked out using ${verification}.`);
+  record.checkOutVerification = verificationText(verification);
+  record.checkOutLocation = verification.location;
+  addAudit("Check out", `${session.name} checked out using ${verificationText(verification)}. Location: ${locationLabel(verification.location)}.`);
   saveState("Attendance updated.");
   attendanceBusy = false;
   render();
@@ -2238,6 +2332,8 @@ async function submitLeave(event) {
   const to = document.querySelector("#leaveTo").value;
   const duration = document.querySelector("#leaveDuration").value;
   const type = document.querySelector("#leaveType").value;
+  const arrangementStartTime = document.querySelector("#leaveArrangementStart").value;
+  const arrangementEndTime = document.querySelector("#leaveArrangementEnd").value;
   const reason = document.querySelector("#leaveReason").value.trim();
   const evidenceFile = document.querySelector("#leaveEvidenceFile")?.files?.[0] || null;
   const evidenceNote = document.querySelector("#leaveEvidenceNote")?.value.trim() || "";
@@ -2250,6 +2346,8 @@ async function submitLeave(event) {
   if (from < today()) return failRequest("Start date cannot be in the past.");
   if (to < from) return failRequest("End date must be after start date.");
   if (duration !== "Full Day" && from !== to) return failRequest("Half day requests must use the same From and To date.");
+  if ((["WFH", "Business Trip"].includes(type) || duration !== "Full Day") && (!arrangementStartTime || !arrangementEndTime)) return failRequest("Arrangement start and end time are required for remote work and half-day requests.");
+  if (arrangementStartTime && arrangementEndTime && arrangementEndTime <= arrangementStartTime) return failRequest("Arrangement end time must be after start time.");
   if (dateRange(from, to).some((dateValue) => !employeeActiveOnDate(employee(session.id), dateValue))) return failRequest("Requests must stay within your active employment or contract period.");
   if (type === "Emergency Leave" && !evidenceFile && !evidenceNote) return failRequest("MC or evidence is required for Emergency Leave.");
   let evidence = null;
@@ -2259,7 +2357,7 @@ async function submitLeave(event) {
     return failRequest(error.message || "Evidence upload failed.");
   }
   if (evidence || evidenceNote) evidence = { ...(evidence || {}), note: evidenceNote };
-  const leave = { id: `LEV${Date.now()}`, employeeId: session.id, type, duration, from, to, reason, evidence, submittedAt: new Date().toLocaleString("en-GB", { hour12: false }), employeeSeen: true, status: "Pending", reviewedBy: "", reviewedAt: "" };
+  const leave = { id: `LEV${Date.now()}`, employeeId: session.id, type, duration, from, to, arrangementStartTime, arrangementEndTime, reason, evidence, submittedAt: new Date().toLocaleString("en-GB", { hour12: false }), employeeSeen: true, status: "Pending", reviewedBy: "", reviewedAt: "" };
   const duplicate = state.leaves.some((item) => item.employeeId === session.id && requestConflicts(leave, item));
   if (duplicate) return failRequest("This date already has a pending or approved request. Only Half Day Morning + Half Day Afternoon can share the same date.");
   state.leaves.push(leave);
@@ -2566,19 +2664,19 @@ async function updateEmployeeDistance() {
 
 function exportAttendance(scope) {
   const records = scope === "all" ? state.attendance : state.attendance.filter((item) => item.employeeId === session.id);
-  const rows = records.map((r) => [employee(r.employeeId)?.name || r.employeeId, r.employeeId, r.date, sessionLabel(r), r.checkIn, r.checkOut || "", r.hours || "", r.status, displayVerification(r.verification), r.checkOut ? displayVerification(r.checkOutVerification || "GPS verified") : "", r.remark || "", r.updatedBy || "", r.updatedAt || ""]);
-  downloadCSV(`${safeName(exportBase(scope, "attendance-records"))}.csv`, ["Employee", "Employee ID", "Date", "Session", "Check In", "Check Out", "Hours", "Status", "Check-in Verification", "Check-out Verification", "Remark", "Updated By", "Updated At"], rows);
+  const rows = records.map((r) => [employee(r.employeeId)?.name || r.employeeId, r.employeeId, r.date, sessionLabel(r), r.checkIn, r.checkOut || "", r.hours || "", r.status, displayVerification(r.verification), locationLabel(r.checkInLocation), r.checkOut ? displayVerification(r.checkOutVerification || "GPS verified") : "", locationLabel(r.checkOutLocation), r.remark || "", r.updatedBy || "", r.updatedAt || ""]);
+  downloadCSV(`${safeName(exportBase(scope, "attendance-records"))}.csv`, ["Employee", "Employee ID", "Date", "Session", "Check In", "Check Out", "Hours", "Status", "Check-in Verification", "Check-in Location", "Check-out Verification", "Check-out Location", "Remark", "Updated By", "Updated At"], rows);
 }
 
 function exportRequests(scope) {
   const requests = scope === "all" ? state.leaves : state.leaves.filter((item) => item.employeeId === session.id);
-  const rows = requests.map((r) => [employee(r.employeeId)?.name || r.employeeId, r.employeeId, r.type, requestDurationLabel(r), r.from, r.to, r.reason, evidenceLabel(r), r.status, r.submittedAt || "", r.reviewedBy || "", r.reviewedAt || ""]);
-  downloadCSV(`${safeName(exportBase(scope, "work-requests"))}.csv`, ["Employee", "Employee ID", "Type", "Duration", "From", "To", "Reason", "Evidence", "Status", "Submitted At", "Reviewed By", "Reviewed At"], rows);
+  const rows = requests.map((r) => [employee(r.employeeId)?.name || r.employeeId, r.employeeId, r.type, requestDurationLabel(r), r.arrangementStartTime || "", r.arrangementEndTime || "", r.from, r.to, r.reason, evidenceLabel(r), r.status, r.submittedAt || "", r.reviewedBy || "", r.reviewedAt || ""]);
+  downloadCSV(`${safeName(exportBase(scope, "work-requests"))}.csv`, ["Employee", "Employee ID", "Type", "Duration", "Arrangement Start", "Arrangement End", "From", "To", "Reason", "Evidence", "Status", "Submitted At", "Reviewed By", "Reviewed At"], rows);
 }
 
 function exportEmployees() {
-  const rows = state.employees.map((emp) => [emp.id, emp.name, emp.email, emp.password, emp.employeeType, emp.scheme || emp.employeeType, emp.attendanceMode, emp.department, emp.position, emp.employmentDate || "", emp.contractStart || "", emp.contractEnd || "", emp.contractStatus || "", emp.contractRemark || "", emp.phone || "", emp.idNumber || "", emp.address || "", emp.emergencyContact || "", emp.vehicleType || "", emp.plateNo || "", effectiveEmployeeStatus(emp), emp.statusRemark || "", emp.statusUpdatedBy || "", emp.statusUpdatedAt || ""]);
-  downloadCSV(`${safeName(`${companyReportName()}-employee-list-${today()}`)}.csv`, ["ID", "Name", "Email", "Password", "Employee Type", "Scheme", "Attendance Mode", "Department", "Position", "Employment Date", "Contract Start", "Contract End", "Contract Status", "Contract Remark", "Phone", "IC / Passport No.", "Address", "Emergency Contact", "Vehicle Type", "Plate No", "Status", "Status Remark", "Updated By", "Updated At"], rows);
+  const rows = state.employees.map((emp) => [emp.id, emp.name, emp.email, emp.password, emp.employeeType, emp.scheme || emp.employeeType, emp.attendanceMode, emp.workStart || "", emp.workEnd || "", emp.lateGraceMinutes || 0, emp.requireOfficeGps !== false ? "Yes" : "No", emp.overtimeEligible !== false ? "Yes" : "No", emp.bonusEligible !== false ? "Yes" : "No", emp.targetHoursOverride || "", emp.otAfterHoursOverride || "", emp.bonusAfterHoursOverride || "", emp.attendancePolicyRemark || "", emp.department, emp.position, emp.employmentDate || "", emp.contractStart || "", emp.contractEnd || "", emp.contractStatus || "", emp.contractRemark || "", emp.phone || "", emp.idNumber || "", emp.address || "", emp.emergencyContact || "", emp.vehicleType || "", emp.plateNo || "", effectiveEmployeeStatus(emp), emp.statusRemark || "", emp.statusUpdatedBy || "", emp.statusUpdatedAt || ""]);
+  downloadCSV(`${safeName(`${companyReportName()}-employee-list-${today()}`)}.csv`, ["ID", "Name", "Email", "Password", "Employee Type", "Scheme", "Attendance Mode", "Work Start", "Work End", "Late Grace Minutes", "Office Radius Required", "OT Eligible", "Bonus Eligible", "Target Hours Override", "OT After Override", "Bonus After Override", "Policy Remark", "Department", "Position", "Employment Date", "Contract Start", "Contract End", "Contract Status", "Contract Remark", "Phone", "IC / Passport No.", "Address", "Emergency Contact", "Vehicle Type", "Plate No", "Status", "Status Remark", "Updated By", "Updated At"], rows);
 }
 
 function exportAudit() {
@@ -2744,11 +2842,12 @@ function saveManualAttendance(event) {
 }
 
 function openEmployeeModal(id) {
-  const emp = employee(id) || { id: `EMP${String(state.employees.length + 1).padStart(3, "0")}`, name: "", email: "", password: "employee123", employeeType: "Permanent", scheme: "Permanent", attendanceMode: "Single Daily", department: "", position: "", employmentDate: today(), phone: "", idNumber: "", address: "", emergencyContact: "", vehicleType: "", plateNo: "", contractStart: today(), contractEnd: "", contractStatus: "Active", contractRemark: "", status: "Active", statusRemark: "" };
+  const emp = employee(id) || { id: `EMP${String(state.employees.length + 1).padStart(3, "0")}`, name: "", email: "", password: "employee123", employeeType: "Permanent", scheme: "Permanent", attendanceMode: "Single Daily", workStart: state.company.lateAfter || "09:00", workEnd: "17:00", lateGraceMinutes: 0, requireOfficeGps: true, overtimeEligible: true, bonusEligible: true, targetHoursOverride: 0, otAfterHoursOverride: 0, bonusAfterHoursOverride: 0, department: "", position: "", employmentDate: today(), phone: "", idNumber: "", address: "", emergencyContact: "", vehicleType: "", plateNo: "", contractStart: today(), contractEnd: "", contractStatus: "Active", contractRemark: "", status: "Active", statusRemark: "" };
   const contractMonths = emp.contractStart && emp.contractEnd ? Math.max(1, (new Date(`${emp.contractEnd}T00:00:00`).getFullYear() - new Date(`${emp.contractStart}T00:00:00`).getFullYear()) * 12 + (new Date(`${emp.contractEnd}T00:00:00`).getMonth() - new Date(`${emp.contractStart}T00:00:00`).getMonth()) + 1) : "";
   const modal = document.querySelector("#modal");
   modal.innerHTML = `<form class="modal employee-modal" id="employeeForm"><h2>${id ? "Edit" : "Add"} Employee</h2><label class="field"><span>ID</span><input id="empId" value="${emp.id}" ${id ? "readonly" : ""}></label><label class="field"><span>Name</span><input id="empName" value="${escapeHtml(emp.name)}" required></label><label class="field"><span>Email</span><input id="empEmail" type="email" value="${escapeHtml(emp.email)}" required></label><label class="field"><span>Password</span><input id="empPassword" value="${escapeHtml(emp.password)}" required></label><label class="field"><span class="label-row">Employee Type ${helpTip("Permanent is usually full-time long-term staff. Part-time and Contract employees can use multiple sessions so daily total hours can support payroll.")}</span><select id="empType"><option ${emp.employeeType === "Permanent" ? "selected" : ""}>Permanent</option><option ${emp.employeeType === "Part-time" ? "selected" : ""}>Part-time</option><option ${emp.employeeType === "Contract" ? "selected" : ""}>Contract</option><option ${emp.employeeType === "Intern" ? "selected" : ""}>Intern</option></select></label><label class="field"><span>Scheme</span><select id="empScheme">${["Permanent", "Part-time", "Contract", "Intern"].map((type) => `<option ${((emp.scheme || emp.employeeType) === type) ? "selected" : ""}>${type}</option>`).join("")}</select></label><label class="field"><span class="label-row">Attendance Mode ${helpTip("Single Daily allows one check-in per day. Multiple Sessions is not manually selected by session number; the system creates Session 1, Session 2 and so on automatically each day.")}</span><select id="empAttendanceMode"><option ${emp.attendanceMode === "Single Daily" ? "selected" : ""}>Single Daily</option><option ${emp.attendanceMode === "Multiple Sessions" ? "selected" : ""}>Multiple Sessions</option></select></label><label class="field"><span>Department</span><input id="empDept" value="${escapeHtml(emp.department)}"></label><label class="field"><span>Position</span><input id="empPos" value="${escapeHtml(emp.position)}"></label><label class="field"><span>Employment Date</span><input id="empEmploymentDate" type="date" value="${emp.employmentDate || today()}" required></label><label class="field"><span>Phone</span><input id="empPhone" value="${escapeHtml(emp.phone || "")}"></label><label class="field"><span>IC / Passport No.</span><input id="empIdNumber" value="${escapeHtml(emp.idNumber || "")}"></label><label class="field"><span>Emergency Contact</span><input id="empEmergency" value="${escapeHtml(emp.emergencyContact || "")}"></label><label class="field"><span>Vehicle Type</span><input id="empVehicleType" value="${escapeHtml(emp.vehicleType || "")}" placeholder="Car / Motorcycle / None"></label><label class="field"><span>Plate No.</span><input id="empPlate" value="${escapeHtml(emp.plateNo || "")}"></label><div class="form-divider wide"><strong>Contract Details</strong><small>For contract employees, the account automatically becomes inactive after the contract end date. Extending the end date resumes the active period automatically.</small></div><label class="field"><span>Contract Start</span><input id="empContractStart" type="date" value="${emp.contractStart || emp.employmentDate || today()}"></label><label class="field"><span>Contract Period (Months)</span><input id="empContractMonths" type="number" min="1" value="${contractMonths}"></label><label class="field"><span>Contract End</span><input id="empContractEnd" type="date" value="${emp.contractEnd || ""}"></label><label class="field"><span class="label-row">Contract Status ${helpTip("Finished Contract closes the active period at the contract end date. Active / Resumed keeps the employee active until the selected contract end date.")}</span><select id="empContractStatus"><option value="Active" ${emp.contractStatus !== "Ended" ? "selected" : ""}>Active / Resumed</option><option value="Ended" ${emp.contractStatus === "Ended" ? "selected" : ""}>Finished Contract</option></select></label><label class="field wide"><span>Contract Remark</span><textarea id="empContractRemark" placeholder="Example: renewed until next year, early completion, resumed by management">${escapeHtml(emp.contractRemark || "")}</textarea></label><label class="field wide"><span>Address</span><textarea id="empAddress">${escapeHtml(emp.address || "")}</textarea></label><label class="field"><span>Status</span><select id="empStatus"><option ${emp.status === "Active" ? "selected" : ""}>Active</option><option ${emp.status === "Inactive" ? "selected" : ""}>Inactive</option></select></label><label class="field"><span class="label-row">Status Effective From ${helpTip("Calendar is counted only inside active employment periods. Before joining, after inactive date, and after contract end date will remain blank.")}</span><input id="empStatusEffectiveDate" type="date" value="${emp.statusEffectiveDate || today()}"></label><label class="field wide"><span>Status Remark / Proof</span><textarea id="empStatusRemark" placeholder="Required if status is changed">${escapeHtml(emp.statusRemark || "")}</textarea></label><div class="modal-actions"><button class="btn primary" type="submit">Save</button><button class="btn" type="button" id="closeModal">Cancel</button></div></form>`;
   modal.classList.add("show");
+  document.querySelector("#empDept")?.closest(".field")?.insertAdjacentHTML("beforebegin", `<div class="form-divider wide"><strong>Attendance Policy</strong><small>Employee-specific rules override scheme defaults. Approved requests can temporarily adjust the schedule for selected dates.</small></div><label class="field"><span>Normal Work Start</span><input id="empWorkStart" type="time" value="${emp.workStart || state.company.lateAfter || "09:00"}" required></label><label class="field"><span>Normal Work End</span><input id="empWorkEnd" type="time" value="${emp.workEnd || "17:00"}" required></label><label class="field"><span>Late Grace (minutes)</span><input id="empLateGrace" type="number" min="0" max="240" value="${Number(emp.lateGraceMinutes || 0)}"></label><label class="field check-line"><input id="empRequireOfficeGps" type="checkbox" ${emp.requireOfficeGps !== false ? "checked" : ""}><span>Normal attendance must be inside office radius</span></label><label class="field check-line"><input id="empOvertimeEligible" type="checkbox" ${emp.overtimeEligible !== false ? "checked" : ""}><span>Eligible for OT calculation</span></label><label class="field check-line"><input id="empBonusEligible" type="checkbox" ${emp.bonusEligible !== false ? "checked" : ""}><span>Eligible for attendance bonus</span></label><label class="field"><span>Monthly Target Override</span><input id="empTargetHoursOverride" type="number" min="0" value="${Number(emp.targetHoursOverride || 0)}" placeholder="0 = use scheme"></label><label class="field"><span>OT After Override</span><input id="empOtAfterOverride" type="number" min="0" value="${Number(emp.otAfterHoursOverride || 0)}" placeholder="0 = use scheme"></label><label class="field"><span>Bonus After Override</span><input id="empBonusAfterOverride" type="number" min="0" value="${Number(emp.bonusAfterHoursOverride || 0)}" placeholder="0 = use scheme"></label><label class="field wide"><span>Attendance Policy Change Remark</span><textarea id="empAttendancePolicyRemark" placeholder="Required when changing schedule, GPS, session, OT, bonus, or hour targets">${escapeHtml(emp.attendancePolicyRemark || "")}</textarea></label>`);
   document.querySelector("#closeModal").addEventListener("click", closeModal);
   const syncContractEnd = () => {
     const start = document.querySelector("#empContractStart").value;
@@ -2808,9 +2907,13 @@ function openEmployeeModal(id) {
     const contractAutoInactive = nextType === "Contract" && contractEnd && contractEnd < today();
     const finalStatus = contractAutoActive ? "Active" : contractAutoInactive ? "Inactive" : nextStatus;
     const finalContractStatus = nextType === "Contract" ? (contractAutoInactive ? "Ended" : contractStatus) : "Active";
-    const payload = { id: document.querySelector("#empId").value.trim(), name: document.querySelector("#empName").value.trim(), email: document.querySelector("#empEmail").value.trim(), password: document.querySelector("#empPassword").value.trim() || "employee123", employeeType: nextType, scheme: document.querySelector("#empScheme").value, attendanceMode: document.querySelector("#empAttendanceMode").value, department: document.querySelector("#empDept").value.trim(), position: document.querySelector("#empPos").value.trim(), employmentDate: document.querySelector("#empEmploymentDate").value, phone: document.querySelector("#empPhone").value.trim(), idNumber: document.querySelector("#empIdNumber").value.trim(), emergencyContact: document.querySelector("#empEmergency").value.trim(), vehicleType: document.querySelector("#empVehicleType").value.trim(), plateNo: document.querySelector("#empPlate").value.trim(), contractStart: nextType === "Contract" ? document.querySelector("#empContractStart").value : "", contractEnd: nextType === "Contract" ? contractEnd : "", contractStatus: finalContractStatus, contractRemark: nextType === "Contract" ? contractRemark : "", address: document.querySelector("#empAddress").value.trim(), status: finalStatus, statusEffectiveDate, statusRemark, statusUpdatedAt: previous && previous.status !== finalStatus ? new Date().toLocaleString("en-GB", { hour12: false }) : emp.statusUpdatedAt || "", statusUpdatedBy: previous && previous.status !== finalStatus ? session.name : emp.statusUpdatedBy || "" };
+    const payload = { id: document.querySelector("#empId").value.trim(), name: document.querySelector("#empName").value.trim(), email: document.querySelector("#empEmail").value.trim(), password: document.querySelector("#empPassword").value.trim() || "employee123", employeeType: nextType, scheme: document.querySelector("#empScheme").value, attendanceMode: document.querySelector("#empAttendanceMode").value, workStart: document.querySelector("#empWorkStart").value, workEnd: document.querySelector("#empWorkEnd").value, lateGraceMinutes: Number(document.querySelector("#empLateGrace").value || 0), requireOfficeGps: document.querySelector("#empRequireOfficeGps").checked, overtimeEligible: document.querySelector("#empOvertimeEligible").checked, bonusEligible: document.querySelector("#empBonusEligible").checked, targetHoursOverride: Number(document.querySelector("#empTargetHoursOverride").value || 0), otAfterHoursOverride: Number(document.querySelector("#empOtAfterOverride").value || 0), bonusAfterHoursOverride: Number(document.querySelector("#empBonusAfterOverride").value || 0), attendancePolicyRemark: document.querySelector("#empAttendancePolicyRemark").value.trim(), department: document.querySelector("#empDept").value.trim(), position: document.querySelector("#empPos").value.trim(), employmentDate: document.querySelector("#empEmploymentDate").value, phone: document.querySelector("#empPhone").value.trim(), idNumber: document.querySelector("#empIdNumber").value.trim(), emergencyContact: document.querySelector("#empEmergency").value.trim(), vehicleType: document.querySelector("#empVehicleType").value.trim(), plateNo: document.querySelector("#empPlate").value.trim(), contractStart: nextType === "Contract" ? document.querySelector("#empContractStart").value : "", contractEnd: nextType === "Contract" ? contractEnd : "", contractStatus: finalContractStatus, contractRemark: nextType === "Contract" ? contractRemark : "", address: document.querySelector("#empAddress").value.trim(), status: finalStatus, statusEffectiveDate, statusRemark, statusUpdatedAt: previous && previous.status !== finalStatus ? new Date().toLocaleString("en-GB", { hour12: false }) : emp.statusUpdatedAt || "", statusUpdatedBy: previous && previous.status !== finalStatus ? session.name : emp.statusUpdatedBy || "" };
     payload.activePeriods = nextActivePeriods(previous, payload, statusEffectiveDate);
     if (!payload.id || !payload.name || !payload.email) return toast("Fill in employee ID, name, and email.");
+    if (!payload.workStart || !payload.workEnd || payload.workEnd <= payload.workStart) return toast("Employee work end time must be after work start time.");
+    const policyFields = ["attendanceMode", "workStart", "workEnd", "lateGraceMinutes", "requireOfficeGps", "overtimeEligible", "bonusEligible", "targetHoursOverride", "otAfterHoursOverride", "bonusAfterHoursOverride"];
+    const policyChanged = previous && policyFields.some((field) => previous[field] !== payload[field]);
+    if (policyChanged && !payload.attendancePolicyRemark) return toast("Attendance policy change remark is required.");
     if (payload.password.length < 8) return toast("Employee password must be at least 8 characters.");
     const duplicateEmployeeId = state.employees.some((item) => item.id === payload.id && item.id !== id);
     if (duplicateEmployeeId) return toast("Employee ID already exists.");
@@ -2823,7 +2926,7 @@ function openEmployeeModal(id) {
     const statusChangeDetail = previous && previous.status !== payload.status ? ` Status changed to ${payload.status} from ${formatDate(statusEffectiveDate)}. Remark: ${statusRemark}` : "";
     const contractChanged = previous && (previous.contractEnd !== payload.contractEnd || previous.contractStatus !== payload.contractStatus || previous.contractRemark !== payload.contractRemark);
     const contractDetail = contractChanged ? ` Contract ${payload.contractStatus.toLowerCase()} until ${payload.contractEnd || "-"}. Remark: ${payload.contractRemark || "-"}` : "";
-    addAudit("Employee saved", `${payload.name} record saved.${statusChangeDetail}${contractDetail}`);
+    addAudit("Employee saved", `${payload.name} record saved.${statusChangeDetail}${contractDetail}${policyChanged ? ` Attendance policy changed. Remark: ${payload.attendancePolicyRemark}.` : ""}`);
     saveState("Employee updated.");
     closeModal();
     render();
