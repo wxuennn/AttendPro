@@ -1,7 +1,7 @@
 const STORAGE_KEY = "attendpro-state-v2";
 const COMPANY_KEY_STORAGE = "attendpro-company-key";
 const DATASET_PASSWORD_STORAGE = "attendpro-dataset-password";
-const APP_VERSION = "20260605-targeted-announcements";
+const APP_VERSION = "20260607-office-remote-governance";
 const APP_VERSION_STORAGE = "attendpro-app-version";
 const TAB_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const channel = "BroadcastChannel" in window ? new BroadcastChannel("attendpro-sync") : null;
@@ -27,6 +27,9 @@ const seedState = {
     officeLatitude: 3.139,
     officeLongitude: 101.6869,
     officeRadius: 300,
+    officeLocationUpdatedBy: "",
+    officeLocationUpdatedAt: "",
+    officeLocationRemark: "",
     autoCheckout: false,
     autoPublicHolidays: true,
     holidayCountry: "Malaysia",
@@ -184,6 +187,9 @@ function normalize(input) {
       officeLatitude: Number((input.company || {}).officeLatitude ?? legacyPolicy.latitude ?? seedState.company.officeLatitude),
       officeLongitude: Number((input.company || {}).officeLongitude ?? legacyPolicy.longitude ?? seedState.company.officeLongitude),
       officeRadius: Number((input.company || {}).officeRadius ?? legacyPolicy.radiusMeters ?? seedState.company.officeRadius),
+      officeLocationUpdatedBy: (input.company || {}).officeLocationUpdatedBy || "",
+      officeLocationUpdatedAt: (input.company || {}).officeLocationUpdatedAt || "",
+      officeLocationRemark: (input.company || {}).officeLocationRemark || "",
       lateAfter: (input.company || {}).lateAfter || legacyPolicy.lateAfter || seedState.company.lateAfter,
       codeSecret: (input.company || {}).codeSecret || legacyPolicy.onsiteSecret || seedState.company.codeSecret,
       codeInterval: Number((input.company || {}).codeInterval ?? legacyPolicy.codeIntervalSeconds ?? seedState.company.codeInterval),
@@ -547,7 +553,7 @@ function officePoint() {
 
 function officeLocationReady() {
   const office = officePoint();
-  return Number.isFinite(office.lat) && Number.isFinite(office.lng) && Number.isFinite(office.radius) && office.radius > 0;
+  return Number.isFinite(office.lat) && Number.isFinite(office.lng) && Number.isFinite(office.radius) && office.radius > 0 && Boolean(state.company.officeLocationUpdatedAt);
 }
 
 function getCurrentPosition() {
@@ -565,7 +571,7 @@ function getCurrentPosition() {
 }
 
 async function verifyOfficeLocation(method) {
-  if (!officeLocationReady()) throw new Error("Office location is not configured. Ask admin to set it in Company Settings.");
+  if (!officeLocationReady()) throw new Error("Official office location is not confirmed. Ask Admin 1 to confirm it in Company Settings.");
   if (!window.isSecureContext && !["localhost", "127.0.0.1"].includes(location.hostname)) {
     throw new Error("Location check needs HTTPS. Use the trycloudflare link on phone.");
   }
@@ -581,14 +587,13 @@ async function verifyOfficeLocation(method) {
 
 async function remoteWorkVerification(request) {
   const status = remoteWorkStatus(request);
-  try {
-    const position = await getCurrentPosition();
-    const current = { lat: position.coords.latitude, lng: position.coords.longitude };
-    const distance = officeLocationReady() ? distanceMeters(current, officePoint()) : null;
-    return `${status} approved${distance === null ? "" : ` (${distance}m from office)`}`;
-  } catch {
-    return `${status} approved (location unavailable)`;
+  if (!window.isSecureContext && !["localhost", "127.0.0.1"].includes(location.hostname)) {
+    throw new Error("Remote attendance GPS needs HTTPS.");
   }
+  const position = await getCurrentPosition();
+  const current = { lat: position.coords.latitude, lng: position.coords.longitude };
+  const distance = officeLocationReady() ? distanceMeters(current, officePoint()) : null;
+  return `${status} approved + Remote GPS verified${distance === null ? "" : ` (${distance}m from office)`}`;
 }
 
 function employee(id) {
@@ -618,8 +623,12 @@ function isOpenAttendanceRecord(record) {
   return Boolean(record.checkIn && !record.checkOut && ["Checked In", "Late", "Off-day Work", "WFH", "Business Trip"].includes(record.status));
 }
 
-function allowsMultipleSessions(emp = employee(session?.id)) {
-  return emp?.attendanceMode === "Multiple Sessions";
+function allowsMultipleSessions(emp = employee(session?.id), dateValue = today()) {
+  return emp?.attendanceMode === "Multiple Sessions" || approvedRemoteWorkForDate(emp?.id, dateValue)?.type === "Business Trip";
+}
+
+function isPrimaryAdmin() {
+  return session?.role === "admin" && session.name === "Admin 1";
 }
 
 function totalMinutesForRecords(records) {
@@ -1322,6 +1331,7 @@ function handleGeofencePosition(position) {
   if (geofenceCheckoutBusy || !session || session.role !== "employee" || !state.company.autoCheckout) return;
   const record = currentOpenRecord();
   if (!record) return;
+  if (["WFH", "Business Trip"].includes(record.status)) return;
   const office = officePoint();
   const current = { lat: position.coords.latitude, lng: position.coords.longitude };
   const distance = distanceMeters(current, office);
@@ -1534,6 +1544,10 @@ function renderEmployeeDashboard() {
   const latestToday = todayRecords.at(-1);
   const inactive = emp.status === "Inactive";
   const multiSession = allowsMultipleSessions(emp);
+  const remoteRequest = approvedRemoteWorkForDate(emp.id, today());
+  const attendanceModeText = remoteRequest
+    ? `${remoteWorkStatus(remoteRequest)} approved. Remote GPS is required; office radius and rotating code are not required.${remoteRequest.type === "Business Trip" ? " Multiple sessions are allowed for flexible trip hours." : ""}`
+    : `Scan the lobby QR or enter the rotating code. Both methods require office GPS range. ${multiSession ? "This account can check in/out multiple sessions per day." : "This account can check in once per day."}`;
   const adminUpdates = adminManualUpdates(session.id).slice(0, 5);
   return `
     <div class="metrics">
@@ -1551,9 +1565,9 @@ function renderEmployeeDashboard() {
         <div><span>Check Out</span><strong>${latestToday?.checkOut || "--:--"}</strong></div>
         <div><span>Status</span><strong>${latestToday?.status || "Ready"}</strong></div>
       </div>
-      <p class="helper">Scan the lobby QR or enter the rotating code. Both methods require office GPS range. ${multiSession ? "This account can check in/out multiple sessions per day." : "This account can check in once per day."}</p>
+      <p class="helper">${attendanceModeText}</p>
       <div class="actions">
-        <button class="btn primary" id="checkIn" ${(!multiSession && todayRecords.length) || open || inactive || attendanceBusy ? "disabled" : ""}>Check In by Code</button>
+        <button class="btn primary" id="checkIn" ${(!multiSession && todayRecords.length) || open || inactive || attendanceBusy ? "disabled" : ""}>${remoteRequest ? "Remote Check In" : "Check In by Code"}</button>
         <button class="btn" id="checkOut" ${!open || inactive || attendanceBusy ? "disabled" : ""}>Check Out</button>
       </div>
     </section>
@@ -1789,7 +1803,7 @@ function renderEmployees() {
 
 function renderAdmins() {
   const admins = state.admins.filter((admin) => includesSearch([admin.id, admin.name, admin.personName, admin.email], "admins"));
-  return `<section class="search-panel">${searchBox("admins", "Search admins")}</section><section class="panel"><div class="panel-head"><h2>Admins ${helpTip("System-facing admin names are limited to Admin 1, Admin 2 and Admin 3. The person name is internal so the company knows who owns each admin code.")}</h2><div class="actions"><button class="btn primary" id="addAdmin" ${state.admins.length >= 3 ? "disabled" : ""}>Add Admin</button></div></div><div class="table-wrap record-scroll"><table class="responsive-table"><thead><tr><th>ID</th><th>Admin Code</th><th>Internal Person</th><th>Email</th><th>Password</th><th>Action</th></tr></thead><tbody>${admins.map((admin) => `<tr><td data-label="ID">${escapeHtml(admin.id)}</td><td data-label="Admin Code">${escapeHtml(admin.name)}</td><td data-label="Internal Person">${escapeHtml(admin.personName || "-")}</td><td data-label="Email">${escapeHtml(admin.email)}</td><td data-label="Password"><code>${escapeHtml(admin.password)}</code></td><td class="actions" data-label="Action"><button class="btn" data-edit-admin="${admin.id}">Edit</button><button class="btn danger" data-delete-admin="${admin.id}" ${state.admins.length <= 1 ? "disabled" : ""}>Delete</button></td></tr>`).join("") || `<tr><td colspan="6" class="empty">No admins found.</td></tr>`}</tbody></table></div></section>`;
+  return `<section class="search-panel">${searchBox("admins", "Search admins")}</section><section class="panel"><div class="panel-head"><h2>Admins ${helpTip("Admin 1 is the Primary Admin responsible for official office GPS governance and cannot be deleted. Admin 2 and Admin 3 support daily administration.")}</h2><div class="actions"><button class="btn primary" id="addAdmin" ${state.admins.length >= 3 ? "disabled" : ""}>Add Admin</button></div></div><div class="table-wrap record-scroll"><table class="responsive-table"><thead><tr><th>ID</th><th>Admin Code</th><th>Internal Person</th><th>Email</th><th>Password</th><th>Action</th></tr></thead><tbody>${admins.map((admin) => `<tr><td data-label="ID">${escapeHtml(admin.id)}</td><td data-label="Admin Code">${escapeHtml(admin.name)}${admin.name === "Admin 1" ? ` <span class="badge status-approved">Primary</span>` : ""}</td><td data-label="Internal Person">${escapeHtml(admin.personName || "-")}</td><td data-label="Email">${escapeHtml(admin.email)}</td><td data-label="Password"><code>${escapeHtml(admin.password)}</code></td><td class="actions" data-label="Action"><button class="btn" data-edit-admin="${admin.id}">Edit</button><button class="btn danger" data-delete-admin="${admin.id}" ${state.admins.length <= 1 || admin.name === "Admin 1" ? "disabled" : ""}>Delete</button></td></tr>`).join("") || `<tr><td colspan="6" class="empty">No admins found.</td></tr>`}</tbody></table></div></section>`;
 }
 
 function renderProfile() {
@@ -1803,6 +1817,10 @@ function renderSettings() {
   const selected = state.company.workingDays || seedState.company.workingDays;
   const leavePolicies = state.company.leavePolicies || seedState.company.leavePolicies;
   const schemeTypes = ["Permanent", "Part-time", "Contract", "Intern"];
+  const primaryAdmin = isPrimaryAdmin();
+  const locationLocked = primaryAdmin ? "" : "disabled";
+  const locationOwner = state.company.officeLocationUpdatedBy || "Not confirmed yet";
+  const locationUpdated = state.company.officeLocationUpdatedAt || "-";
   return `
     <form class="panel form-grid settings-form compact-settings" id="settingsForm">
       <div class="panel-head wide">
@@ -1817,16 +1835,18 @@ function renderSettings() {
         <small>Devices using the same dataset key share the same company data. Use a different key for another company.</small>
       </div>
       <label class="field"><span>Company Name</span><input id="companyName" value="${escapeHtml(state.company.name)}" required></label>
-      <label class="field"><span>Office Name</span><input id="officeName" value="${escapeHtml(state.company.officeName)}" required></label>
+      <label class="field"><span>Office Name</span><input id="officeName" value="${escapeHtml(state.company.officeName)}" required ${locationLocked}></label>
       <label class="field"><span>Late After</span><input id="lateAfter" type="time" value="${state.company.lateAfter}" required></label>
       <label class="field"><span class="label-row">QR / Code Refresh ${helpTip("How often the QR and manual code rotate. Shorter timing is safer because leaked codes expire faster.")}</span><select id="codeInterval"><option value="30" ${state.company.codeInterval === 30 ? "selected" : ""}>30 seconds</option><option value="60" ${state.company.codeInterval === 60 ? "selected" : ""}>60 seconds</option></select></label>
       <label class="field">
         <span class="label-row">Code Secret ${helpTip("Private seed used to generate rotating QR and manual codes. Change it if a code is leaked.")}</span>
         <input id="codeSecret" value="${escapeHtml(state.company.codeSecret)}" required>
       </label>
-      <label class="field"><span>Office Latitude</span><input id="officeLatitude" type="number" step="0.000001" value="${state.company.officeLatitude}" required></label>
-      <label class="field"><span>Office Longitude</span><input id="officeLongitude" type="number" step="0.000001" value="${state.company.officeLongitude}" required></label>
-      <label class="field"><span class="label-row">Allowed Radius (m) ${helpTip("Employees must be inside this GPS radius to check in by QR or manual code. Use a larger radius only if the office GPS is unstable.")}</span><input id="officeRadius" type="number" min="20" max="5000" step="10" value="${state.company.officeRadius}" required></label>
+      <div class="field wide dataset-card"><span>Office Location Governance ${helpTip("Only Admin 1 can confirm or change the official office GPS. Every confirmation/change requires a reason and is recorded in the audit log. Office QR/code attendance stays unavailable until confirmed.")}</span><strong>${state.company.officeLocationUpdatedAt ? "Official location confirmed" : "Confirmation required"} | ${primaryAdmin ? "Primary Admin access" : "View only - contact Admin 1"}</strong><small>Last confirmed by ${escapeHtml(locationOwner)} | ${escapeHtml(locationUpdated)}${state.company.officeLocationRemark ? ` | ${escapeHtml(state.company.officeLocationRemark)}` : ""}</small></div>
+      <label class="field"><span>Office Latitude</span><input id="officeLatitude" type="number" step="0.000001" value="${state.company.officeLatitude}" required ${locationLocked}></label>
+      <label class="field"><span>Office Longitude</span><input id="officeLongitude" type="number" step="0.000001" value="${state.company.officeLongitude}" required ${locationLocked}></label>
+      <label class="field"><span class="label-row">Allowed Radius (m) ${helpTip("Employees must be inside this GPS radius to check in by QR or manual code. Use a larger radius only if the office GPS is unstable.")}</span><input id="officeRadius" type="number" min="20" max="5000" step="10" value="${state.company.officeRadius}" required ${locationLocked}></label>
+      ${primaryAdmin ? `<label class="field wide"><span>Office Location Confirmation / Change Reason</span><textarea id="officeLocationRemark" placeholder="Required for the first confirmation and whenever office name, coordinates, or radius changes"></textarea></label>` : ""}
       <label class="field check-line wide"><input id="autoCheckout" type="checkbox" ${state.company.autoCheckout ? "checked" : ""}><span>Auto check-out when employee leaves GPS radius ${helpTip("Works while the employee website is open and location permission remains allowed. Browsers cannot reliably track location after the tab/app is fully closed.")}</span></label>
       <label class="field check-line wide"><input id="autoPublicHolidays" type="checkbox" ${state.company.autoPublicHolidays !== false ? "checked" : ""}><span>Auto Malaysia national public holidays ${helpTip("Adds Malaysia national public holidays to every employee calendar automatically. Admin can still add company-specific or state-specific holidays through Announcements.")}</span></label>
       <div class="field wide dataset-card"><span>Holiday Source</span><strong>${escapeHtml(state.company.holidayCountry || "Malaysia")} - ${escapeHtml(state.company.holidayRegion || "National")}</strong><small>Public holidays sync automatically by selected year when provider data is available. Admin announcements are only needed for company adjustments, state replacement days, or changing a holiday into a working day.</small></div>
@@ -1847,7 +1867,7 @@ function renderSettings() {
         </div>
       </div>
       <div class="wide actions">
-        <button class="btn" type="button" id="useMyLocation">Use My Current Location</button>
+        <button class="btn" type="button" id="useMyLocation" ${primaryAdmin ? "" : "disabled"}>Use My Current Location</button>
         <button class="btn primary" type="submit">Save Settings</button>
       </div>
     </form>
@@ -1861,7 +1881,11 @@ function renderAudit() {
 
 function bindEvents() {
   bindPasswordToggles();
-  document.querySelector("#checkIn")?.addEventListener("click", () => openManualCheckIn());
+  document.querySelector("#checkIn")?.addEventListener("click", () => {
+    const remoteRequest = approvedRemoteWorkForDate(session?.id, today());
+    if (remoteRequest) checkIn("Approved remote attendance");
+    else openManualCheckIn();
+  });
   document.querySelector("#checkOut")?.addEventListener("click", checkOut);
   document.querySelector("#openQr")?.addEventListener("click", openQrDisplay);
   document.querySelector("#leaveForm")?.addEventListener("submit", submitLeave);
@@ -2421,14 +2445,37 @@ function saveProfile(event) {
 
 function saveSettings(event) {
   event.preventDefault();
+  const previousOffice = {
+    name: state.company.officeName,
+    latitude: Number(state.company.officeLatitude),
+    longitude: Number(state.company.officeLongitude),
+    radius: Number(state.company.officeRadius)
+  };
+  const nextOffice = isPrimaryAdmin() ? {
+    name: document.querySelector("#officeName").value.trim(),
+    latitude: Number(document.querySelector("#officeLatitude").value),
+    longitude: Number(document.querySelector("#officeLongitude").value),
+    radius: Number(document.querySelector("#officeRadius").value)
+  } : previousOffice;
+  const officeChanged = objectChanged(previousOffice, nextOffice);
+  const officeConfirmationNeeded = !state.company.officeLocationUpdatedAt;
+  const officeRemark = document.querySelector("#officeLocationRemark")?.value.trim() || "";
+  if (!Number.isFinite(nextOffice.latitude) || !Number.isFinite(nextOffice.longitude) || !Number.isFinite(nextOffice.radius) || nextOffice.radius <= 0) return toast("Enter a valid office latitude, longitude, and radius.");
+  if (officeChanged && !isPrimaryAdmin()) return toast("Only Admin 1 can change the official office location.");
+  if ((officeChanged || officeConfirmationNeeded) && isPrimaryAdmin() && !officeRemark) return toast("Office location confirmation/change reason is required.");
   state.company.name = document.querySelector("#companyName").value.trim();
-  state.company.officeName = document.querySelector("#officeName").value.trim();
+  state.company.officeName = nextOffice.name;
   state.company.lateAfter = document.querySelector("#lateAfter").value;
   state.company.codeInterval = Number(document.querySelector("#codeInterval").value);
   state.company.codeSecret = document.querySelector("#codeSecret").value.trim().toUpperCase();
-  state.company.officeLatitude = Number(document.querySelector("#officeLatitude").value);
-  state.company.officeLongitude = Number(document.querySelector("#officeLongitude").value);
-  state.company.officeRadius = Number(document.querySelector("#officeRadius").value);
+  state.company.officeLatitude = nextOffice.latitude;
+  state.company.officeLongitude = nextOffice.longitude;
+  state.company.officeRadius = nextOffice.radius;
+  if (officeChanged || (officeConfirmationNeeded && isPrimaryAdmin())) {
+    state.company.officeLocationUpdatedBy = `${session.name}${session.personName ? ` (${session.personName})` : ""}`;
+    state.company.officeLocationUpdatedAt = new Date().toLocaleString("en-GB", { hour12: false });
+    state.company.officeLocationRemark = officeRemark;
+  }
   state.company.autoCheckout = document.querySelector("#autoCheckout").checked;
   state.company.autoPublicHolidays = document.querySelector("#autoPublicHolidays").checked;
   state.company.holidayCountry = state.company.holidayCountry || "Malaysia";
@@ -2444,16 +2491,16 @@ function saveSettings(event) {
     state.company.schemes[type] = state.company.schemes[type] || {};
     state.company.schemes[type][field] = Number(input.value || 0);
   });
-  if (!officeLocationReady()) return toast("Enter a valid office latitude, longitude, and radius.");
   state.company.workingDays = Array.from(document.querySelectorAll("input[name='workingDay']:checked")).map((input) => input.value);
   if (!state.company.workingDays.length) return toast("Select at least one working day.");
-  addAudit("Settings updated", `${session.name} updated company settings.`);
+  addAudit("Settings updated", `${session.name} updated company settings.${officeChanged ? ` Official office location changed from ${previousOffice.name} (${previousOffice.latitude}, ${previousOffice.longitude}, ${previousOffice.radius}m) to ${nextOffice.name} (${nextOffice.latitude}, ${nextOffice.longitude}, ${nextOffice.radius}m). Reason: ${officeRemark}.` : officeConfirmationNeeded && isPrimaryAdmin() ? ` Official office location confirmed as ${nextOffice.name} (${nextOffice.latitude}, ${nextOffice.longitude}, ${nextOffice.radius}m). Reason: ${officeRemark}.` : ""}`);
   saveState("Settings updated.");
   render();
   toast("Settings saved.");
 }
 
 async function useMyLocationForOffice() {
+  if (!isPrimaryAdmin()) return toast("Only Admin 1 can confirm the official office location.");
   try {
     toast("Getting your current location...");
     const position = await getCurrentPosition();
@@ -2466,6 +2513,7 @@ async function useMyLocationForOffice() {
 }
 
 async function updateEmployeeDistance() {
+  if (!officeLocationReady()) return toast("Official office location is not confirmed yet.");
   try {
     toast("Checking distance...");
     const position = await getCurrentPosition();
@@ -2751,7 +2799,7 @@ function openAdminModal(id) {
   const availableCodes = ["Admin 1", "Admin 2", "Admin 3"].filter((code) => existing?.name === code || !state.admins.some((admin) => admin.name === code));
   const admin = existing || { id: nextAdminId(), name: availableCodes[0] || "Admin 1", personName: "", email: "", password: "admin12345" };
   const modal = document.querySelector("#modal");
-  modal.innerHTML = `<form class="modal" id="adminForm"><h2>${existing ? "Edit" : "Add"} Admin</h2><label class="field"><span>ID</span><input id="adminId" value="${escapeHtml(admin.id)}" ${existing ? "readonly" : ""} required></label><label class="field"><span>Admin Code</span><select id="adminName">${availableCodes.map((code) => `<option ${admin.name === code ? "selected" : ""}>${code}</option>`).join("")}</select></label><label class="field"><span>Internal Person Name</span><input id="adminPersonName" value="${escapeHtml(admin.personName || "")}" required></label><label class="field"><span>Email</span><input id="adminEmail" type="email" value="${escapeHtml(admin.email)}" required></label><label class="field"><span>Password</span><input id="adminPassword" value="${escapeHtml(admin.password)}" required></label><div class="modal-actions"><button class="btn primary" type="submit">Save Admin</button><button class="btn" type="button" id="closeModal">Cancel</button></div></form>`;
+  modal.innerHTML = `<form class="modal" id="adminForm"><h2>${existing ? "Edit" : "Add"} Admin</h2><label class="field"><span>ID</span><input id="adminId" value="${escapeHtml(admin.id)}" ${existing ? "readonly" : ""} required></label><label class="field"><span>Admin Code</span><select id="adminName" ${existing ? "disabled" : ""}>${availableCodes.map((code) => `<option ${admin.name === code ? "selected" : ""}>${code}</option>`).join("")}</select><small>Admin code is permanent after creation. Admin 1 is the Primary Admin.</small></label><label class="field"><span>Internal Person Name</span><input id="adminPersonName" value="${escapeHtml(admin.personName || "")}" required></label><label class="field"><span>Email</span><input id="adminEmail" type="email" value="${escapeHtml(admin.email)}" required></label><label class="field"><span>Password</span><input id="adminPassword" value="${escapeHtml(admin.password)}" required></label><div class="modal-actions"><button class="btn primary" type="submit">Save Admin</button><button class="btn" type="button" id="closeModal">Cancel</button></div></form>`;
   modal.classList.add("show");
   document.querySelector("#closeModal").addEventListener("click", closeModal);
   document.querySelector("#adminForm").addEventListener("submit", (event) => {
@@ -2791,6 +2839,7 @@ function openAdminModal(id) {
 function deleteAdmin(id) {
   const admin = state.admins.find((item) => item.id === id);
   if (!admin) return toast("Admin not found.");
+  if (admin.name === "Admin 1") return toast("Admin 1 is the Primary Admin and cannot be deleted.");
   if (state.admins.length <= 1) return toast("At least one admin is required.");
   if (admin.id === session.id) return toast("You cannot delete your own admin account while logged in.");
   const modal = document.querySelector("#modal");
