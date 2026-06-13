@@ -1,10 +1,22 @@
 const STORAGE_KEY = "attendpro-state-v2";
 const COMPANY_KEY_STORAGE = "attendpro-company-key";
 const DATASET_PASSWORD_STORAGE = "attendpro-dataset-password";
-const APP_VERSION = "20260613-announcement-audience-calendar-flow";
+const DATA_RESET_STORAGE = "attendpro-data-reset-version";
+const DATA_RESET_VERSION = "20260613-clean-slate-1";
+const APP_VERSION = "20260613-clean-slate-hardening";
 const APP_VERSION_STORAGE = "attendpro-app-version";
 const TAB_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const channel = "BroadcastChannel" in window ? new BroadcastChannel("attendpro-sync") : null;
+
+if (localStorage.getItem(DATA_RESET_STORAGE) !== DATA_RESET_VERSION) {
+  localStorage.removeItem(STORAGE_KEY);
+  localStorage.removeItem(COMPANY_KEY_STORAGE);
+  Object.keys(localStorage)
+    .filter((key) => key.startsWith(`${DATASET_PASSWORD_STORAGE}-`))
+    .forEach((key) => localStorage.removeItem(key));
+  localStorage.setItem(DATA_RESET_STORAGE, DATA_RESET_VERSION);
+}
+
 let companyKey = cleanDatasetKey(new URLSearchParams(location.search).get("company") || localStorage.getItem(COMPANY_KEY_STORAGE) || "default");
 let datasetPassword = localStorage.getItem(`${DATASET_PASSWORD_STORAGE}-${companyKey}`) || "";
 
@@ -157,7 +169,7 @@ function setCompanyKey(value) {
 }
 
 function cleanDatasetKey(value) {
-  return (value || "default").trim().replace(/[^A-Za-z0-9_-]/g, "") || "default";
+  return (value || "default").trim().toLowerCase().replace(/[^a-z0-9_-]/g, "") || "default";
 }
 
 function setDatasetPassword(value) {
@@ -1520,10 +1532,23 @@ function renderLogin() {
 
 async function login(event) {
   event.preventDefault();
-  const selectedCompany = cleanDatasetKey(document.querySelector("#companyKey").value);
+  const rawCompany = document.querySelector("#companyKey").value.trim();
+  const selectedCompany = cleanDatasetKey(rawCompany);
   const selectedDatasetPassword = document.querySelector("#datasetPassword").value;
   const email = document.querySelector("#email").value.trim().toLowerCase();
   const password = document.querySelector("#password").value;
+  if (!/^[A-Za-z0-9_-]{3,50}$/.test(rawCompany)) {
+    document.querySelector("#loginMessage").textContent = "Dataset name must be 3-50 letters, numbers, hyphens, or underscores.";
+    return;
+  }
+  if (selectedDatasetPassword.length < 8) {
+    document.querySelector("#loginMessage").textContent = "Dataset password must be at least 8 characters.";
+    return;
+  }
+  if (loginRole === "admin" && password.length < 8) {
+    document.querySelector("#loginMessage").textContent = "Admin password must be at least 8 characters.";
+    return;
+  }
   if (selectedCompany !== companyKey) {
     setCompanyKey(selectedCompany);
   }
