@@ -212,31 +212,75 @@ main { min-width: 0; }
   font-weight: 900;
   cursor: help;
   vertical-align: middle;
+  transition: color 160ms ease, background-color 160ms ease, border-color 160ms ease, transform 160ms ease;
+}
+.help-tip:hover,
+.help-tip:focus-visible {
+  border-color: #a9ccc5;
+  background: #e8f4f1;
+  color: #16695f;
+  outline: none;
+  transform: translateY(-1px);
 }
 .help-bubble {
   position: fixed;
   z-index: 1000;
-  display: none;
+  display: block;
+  visibility: hidden;
+  opacity: 0;
   width: max-content;
   max-width: min(320px, calc(100vw - 24px));
   padding: 11px 13px;
-  border: 1px solid #c9d9d6;
+  border: 1px solid #d6e4e1;
   border-radius: var(--radius);
-  background: #f6fbfa;
+  background: rgba(249, 252, 251, 0.98);
   color: #23343b !important;
-  box-shadow: 0 12px 28px rgba(17, 36, 45, 0.14);
+  box-shadow: 0 10px 24px rgba(17, 36, 45, 0.11);
   font-size: 0.78rem !important;
-  font-weight: 700 !important;
+  font-weight: 650 !important;
   line-height: 1.4;
   pointer-events: none;
   overflow-wrap: anywhere;
   white-space: normal;
+  transform: translateY(4px) scale(0.985);
+  transition: opacity 180ms ease, transform 180ms ease, visibility 180ms ease;
 }
+.help-bubble.visible { visibility: visible; }
 .help-bubble.show {
-  display: block;
+  opacity: 1;
+  transform: translateY(0) scale(1);
 }
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
 .wide { grid-column: 1 / -1; }
+.selection-check-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 8px;
+  max-height: 210px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface-3);
+  overflow: auto;
+}
+.selection-check {
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  padding: 8px 9px;
+  border: 1px solid transparent;
+  border-radius: var(--radius);
+  background: var(--surface);
+  cursor: pointer;
+  transition: border-color 160ms ease, background-color 160ms ease;
+}
+.selection-check:hover { border-color: #b8d5cf; background: #f8fcfb; }
+.selection-check:has(input:checked) { border-color: #8fc2b8; background: #e8f4f1; }
+.selection-check input { width: 16px; min-height: 16px; margin: 0; }
+.selection-check span { min-width: 0; overflow-wrap: anywhere; font-size: 0.84rem; font-weight: 720; }
+.compact-empty { margin: 0; padding: 8px; }
 .settings-form { max-width: none; }
 .compact-settings {
   width: 100%;
