@@ -3,7 +3,7 @@ const COMPANY_KEY_STORAGE = "attendpro-company-key";
 const DATASET_PASSWORD_STORAGE = "attendpro-dataset-password";
 const DATA_RESET_STORAGE = "attendpro-data-reset-version";
 const DATA_RESET_VERSION = "20260613-clean-slate-1";
-const APP_VERSION = "20260613-clean-slate-hardening";
+const APP_VERSION = "20260614-work-request-layout-fix";
 const APP_VERSION_STORAGE = "attendpro-app-version";
 const TAB_ID = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
 const channel = "BroadcastChannel" in window ? new BroadcastChannel("attendpro-sync") : null;
@@ -1878,7 +1878,7 @@ function renderLeaveForm() {
         <label class="field"><span>To</span><input id="leaveTo" type="date" min="${today()}" required></label>
         <label class="field wide"><span>Reason</span><textarea id="leaveReason" required></textarea></label>
         <label class="field wide"><span class="label-row">MC / Evidence ${helpTip("Required for Emergency Leave. You can upload a small MC image/PDF or enter a clinic/reference note. Keep files small so the shared Firebase dataset stays fast.")}</span><input id="leaveEvidenceFile" type="file" accept="image/*,.pdf"><input id="leaveEvidenceNote" placeholder="MC number, clinic name, or evidence link/reference"></label>
-        <button class="btn primary" type="submit">Submit Request</button>
+        <button class="btn primary wide" type="submit">Submit Request</button>
       </form>
       <section class="panel request-list-panel"><div class="panel-head"><h2>My Requests</h2></div>${leaveTable(mine, false)}</section>
     </div>
